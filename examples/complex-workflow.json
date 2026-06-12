@@ -1,0 +1,128 @@
+{
+  "name": "multi-source-research-workflow",
+  "version": "1.0",
+  "description": "多起点→汇集→编码→审查回路 复杂工作流，包含 claude/opencode/script 三种节点类型",
+  "config": {
+    "max_retries": 3,
+    "retry_delay_seconds": 10,
+    "timeout_seconds": 600
+  },
+  "nodes": [
+    {
+      "id": "gen_project_name",
+      "name": "生成项目名称",
+      "type": "claude",
+      "prompt": "根据用户输入的需求，生成一个简洁的项目名称和 slogan。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "project_name": { "type": "string" },
+          "slogan": { "type": "string" }
+        },
+        "required": ["project_name", "slogan"]
+      },
+      "retry": {
+        "max_retries": 1,
+        "timeout_seconds": 120
+      }
+    },
+    {
+      "id": "gen_features",
+      "name": "生成功能列表",
+      "type": "opencode",
+      "prompt": "根据用户输入的需求，列出 3-5 个核心功能点。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "features": { "type": "array", "items": { "type": "string" } },
+          "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] }
+        },
+        "required": ["features", "difficulty"]
+      },
+      "retry": {
+        "max_retries": 1,
+        "timeout_seconds": 120
+      }
+    },
+    {
+      "id": "merge_info",
+      "name": "信息汇集",
+      "type": "script",
+      "command": "python -c \"import json,sys;c=json.load(sys.stdin);u=c.get('upstream',{});a=u.get('gen_project_name',{});b=u.get('gen_features',{});pn=a.get('project_name','?');sl=a.get('slogan','');feats=b.get('features',[]);diff=b.get('difficulty','?');r={'merged':True,'brief':'Project: '+pn+' | Slogan: '+sl+' | Features('+str(len(feats))+'): '+','.join(feats)+' | Difficulty: '+diff,'project_name':pn,'slogan':sl,'features':feats,'difficulty':diff};print(json.dumps(r,ensure_ascii=False))\"",
+      "timeout_seconds": 30,
+      "output": {
+        "type": "object",
+        "properties": {
+          "merged": { "type": "boolean" },
+          "brief": { "type": "string" }
+        },
+        "required": ["merged", "brief"]
+      }
+    },
+    {
+      "id": "coding",
+      "name": "方案制定",
+      "type": "claude",
+      "prompt": "你是一个软件工程师。根据上游汇集的信息，制定一个简要的实现方案。如有审查反馈请修改。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "plan": { "type": "string" },
+          "steps": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["plan", "steps"]
+      },
+      "retry": {
+        "max_retries": 2,
+        "timeout_seconds": 120
+      }
+    },
+    {
+      "id": "review",
+      "name": "方案审查",
+      "type": "opencode",
+      "prompt": "你是一个审查员。审查上游的实现方案是否合理。如果步骤少于 3 个或描述不清晰，不予通过并给出反馈。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        },
+        "required": ["approved", "feedback"]
+      },
+      "retry": {
+        "max_retries": 1,
+        "timeout_seconds": 120
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "gen_project_name", "to": "merge_info" },
+    { "id": "e2", "from": "gen_features", "to": "merge_info" },
+    { "id": "e3", "from": "merge_info", "to": "coding" },
+    { "id": "e4", "from": "coding", "to": "review" },
+    {
+      "id": "e5",
+      "from": "review",
+      "to": "coding",
+      "condition": "{{ nodes.review.output.approved }} == false"
+    },
+    {
+      "id": "e6",
+      "from": "review",
+      "to": null,
+      "condition": "{{ nodes.review.output.approved }} == true"
+    }
+  ],
+  "inputs": {
+    "requirement": {
+      "type": "string",
+      "required": true,
+      "description": "需求描述"
+    }
+  }
+}

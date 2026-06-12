@@ -1,0 +1,72 @@
+{
+  "name": "code-review-workflow",
+  "version": "1.0",
+  "description": "Automated coding with review loop",
+  "config": {
+    "max_retries": 3,
+    "retry_delay_seconds": 30,
+    "timeout_seconds": 1800
+  },
+  "nodes": [
+    {
+      "id": "coding",
+      "name": "Code Implementation",
+      "type": "claude",
+      "prompt": "你是一个资深软件工程师。根据用户输入编写代码，将代码写入文件。如果有审查反馈，根据反馈意见修改代码。使用 Write/Edit/Bash 工具完成所有工具操作后，输出 JSON 结果。",
+      "tools": {
+        "allowed": ["Read", "Write", "Edit", "Bash", "Grep"],
+        "disallowed": ["WebFetch"]
+      },
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "files_changed": { "type": "array", "items": { "type": "string" } },
+          "summary": { "type": "string" }
+        },
+        "required": ["files_changed", "summary"]
+      },
+      "retry": {
+        "max_retries": 2,
+        "on_error": ["timeout", "parse_error"]
+      }
+    },
+    {
+      "id": "review",
+      "name": "Code Review",
+      "type": "claude",
+      "prompt": "你是一个代码审查专家。仔细阅读上游节点产出的代码，检查 bug、风格问题和正确性，给出审查意见。使用 Read/Grep 工具审查代码后，输出 JSON 结果。",
+      "tools": {
+        "allowed": ["Read", "Grep"],
+        "disallowed": ["Write", "Edit", "Bash"]
+      },
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        },
+        "required": ["approved"]
+      },
+      "retry": {
+        "max_retries": 1,
+        "on_error": ["timeout"]
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "coding", "to": "review" },
+    {
+      "id": "e2", "from": "review", "to": "coding",
+      "condition": "{{ nodes.review.output.approved }} == false"
+    },
+    {
+      "id": "e3", "from": "review", "to": null,
+      "condition": "{{ nodes.review.output.approved }} == true"
+    }
+  ],
+  "inputs": {
+    "requirement": { "type": "string", "required": true }
+  }
+}

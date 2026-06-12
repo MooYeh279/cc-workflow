@@ -1,0 +1,67 @@
+{
+  "name": "human-review-workflow",
+  "version": "1.0",
+  "description": "人工审核工作流: opencodee生成 → 人工审核 → 通过则透传 / 驳回则反馈重做",
+  "config": {
+    "max_retries": 3,
+    "retry_delay_seconds": 10,
+    "timeout_seconds": 600
+  },
+  "nodes": [
+    {
+      "id": "coding",
+      "name": "代码生成",
+      "type": "opencode",
+      "prompt": "你是一个软件工程师。根据用户输入的需求，制定一个简要的实现方案。如有审查反馈，请根据反馈修改方案。直接输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "plan": { "type": "string" },
+          "steps": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["plan", "steps"]
+      },
+      "retry": {
+        "max_retries": 2,
+        "timeout_seconds": 120
+      }
+    },
+    {
+      "id": "review",
+      "name": "人工审核",
+      "type": "human_review",
+      "prompt": "请人工审核上游节点的实现方案。\n- 通过(approve): 方案合理，透传到下一步\n- 驳回(reject): 提供反馈意见，退回上游节点修改",
+      "output": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        },
+        "required": ["approved", "feedback"]
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "coding", "to": "review" },
+    {
+      "id": "e2",
+      "from": "review",
+      "to": "coding",
+      "condition": "{{ nodes.review.output.approved }} == false"
+    },
+    {
+      "id": "e3",
+      "from": "review",
+      "to": null,
+      "condition": "{{ nodes.review.output.approved }} == true"
+    }
+  ],
+  "inputs": {
+    "requirement": {
+      "type": "string",
+      "required": true,
+      "description": "功能需求描述"
+    }
+  }
+}

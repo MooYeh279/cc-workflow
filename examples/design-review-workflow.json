@@ -1,0 +1,139 @@
+{
+  "name": "design-review-workflow",
+  "version": "1.0",
+  "description": "需求分析 → 方案设计 → 人工评审 → 实施计划 → 人工评审，每步评审不通过即退回重做",
+  "config": {
+    "max_retries": 3,
+    "retry_delay_seconds": 10,
+    "timeout_seconds": 600
+  },
+  "nodes": [
+    {
+      "id": "requirement_analysis",
+      "name": "需求分析",
+      "type": "opencode",
+      "prompt": "你是一个需求分析师。根据用户输入的需求，进行分析并输出结构化的需求文档。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string", "description": "需求概述" },
+          "goals": { "type": "array", "items": { "type": "string" }, "description": "核心目标列表" },
+          "constraints": { "type": "array", "items": { "type": "string" }, "description": "约束条件" },
+          "stakeholders": { "type": "array", "items": { "type": "string" }, "description": "涉及角色" }
+        },
+        "required": ["summary", "goals"]
+      },
+      "retry": {
+        "max_retries": 1,
+        "timeout_seconds": 120
+      }
+    },
+    {
+      "id": "design",
+      "name": "方案设计",
+      "type": "opencode",
+      "prompt": "你是一个系统架构师。根据上游需求分析文档，设计技术方案。如有人工评审反馈，请根据反馈意见修改方案。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "architecture": { "type": "string", "description": "整体架构描述" },
+          "tech_stack": { "type": "array", "items": { "type": "string" }, "description": "技术栈选型" },
+          "modules": { "type": "array", "items": { "type": "string" }, "description": "模块划分" },
+          "data_flow": { "type": "string", "description": "数据流说明" }
+        },
+        "required": ["architecture", "modules"]
+      },
+      "retry": {
+        "max_retries": 2,
+        "timeout_seconds": 180
+      }
+    },
+    {
+      "id": "review_design",
+      "name": "设计方案评审",
+      "type": "human_review",
+      "prompt": "请人工审核「方案设计」节点的产出。\n- 通过(approve): 架构合理、模块划分清晰，可以进入实施计划阶段\n- 驳回(reject): 方案存在问题，提供具体反馈，退回设计节点修改",
+      "output": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        },
+        "required": ["approved", "feedback"]
+      }
+    },
+    {
+      "id": "plan",
+      "name": "实施计划",
+      "type": "opencode",
+      "prompt": "你是一个项目经理。根据上游审核通过的设计方案，制定详细的实施计划。如有人工评审反馈，请根据反馈修改计划。不需要使用任何工具，直接思考并输出 JSON。",
+      "model": "deepseek-v4-pro",
+      "output": {
+        "type": "object",
+        "properties": {
+          "phases": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "tasks": { "type": "array", "items": { "type": "string" } }, "duration_days": { "type": "number" } } }, "description": "实施阶段" },
+          "milestones": { "type": "array", "items": { "type": "string" }, "description": "关键里程碑" },
+          "risks": { "type": "array", "items": { "type": "string" }, "description": "风险与应对" },
+          "total_estimate_days": { "type": "number", "description": "预估总工期(天)" }
+        },
+        "required": ["phases", "milestones"]
+      },
+      "retry": {
+        "max_retries": 2,
+        "timeout_seconds": 180
+      }
+    },
+    {
+      "id": "review_plan",
+      "name": "实施计划评审",
+      "type": "human_review",
+      "prompt": "请人工审核「实施计划」节点的产出。\n- 通过(approve): 计划可行、里程碑合理，工作流结束\n- 驳回(reject): 计划需要调整，提供具体反馈，退回计划节点修改",
+      "output": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "feedback": { "type": "string" }
+        },
+        "required": ["approved", "feedback"]
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "requirement_analysis", "to": "design" },
+    { "id": "e2", "from": "design", "to": "review_design" },
+    {
+      "id": "e3",
+      "from": "review_design",
+      "to": "design",
+      "condition": "{{ nodes.review_design.output.approved }} == false"
+    },
+    {
+      "id": "e4",
+      "from": "review_design",
+      "to": "plan",
+      "condition": "{{ nodes.review_design.output.approved }} == true"
+    },
+    { "id": "e5", "from": "plan", "to": "review_plan" },
+    {
+      "id": "e6",
+      "from": "review_plan",
+      "to": "plan",
+      "condition": "{{ nodes.review_plan.output.approved }} == false"
+    },
+    {
+      "id": "e7",
+      "from": "review_plan",
+      "to": null,
+      "condition": "{{ nodes.review_plan.output.approved }} == true"
+    }
+  ],
+  "inputs": {
+    "requirement": {
+      "type": "string",
+      "required": true,
+      "description": "项目需求描述"
+    }
+  }
+}

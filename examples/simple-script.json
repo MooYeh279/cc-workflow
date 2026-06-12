@@ -1,0 +1,35 @@
+{
+  "name": "simple-script-workflow",
+  "version": "1.0",
+  "description": "A minimal script-only workflow",
+  "config": {
+    "max_retries": 1,
+    "retry_delay_seconds": 5,
+    "timeout_seconds": 300
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "name": "Start",
+      "type": "script",
+      "command": "python -c \"import json,sys; data=json.load(sys.stdin); print(json.dumps({'echo': data}))\"",
+      "timeout_seconds": 30,
+      "output": {
+        "type": "object",
+        "properties": {
+          "echo": { "type": "object" }
+        },
+        "required": ["echo"]
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "start" }
+  ],
+  "inputs": {
+    "message": {
+      "type": "string",
+      "default": "Hello, World!"
+    }
+  }
+}

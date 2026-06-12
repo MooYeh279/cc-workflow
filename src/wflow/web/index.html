@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WFlow — Workflow Orchestrator</title>
+  <link rel="stylesheet" href="/css/style.css?v=11">
+  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+</head>
+<body x-data="appData()">
+  <div class="app-shell">
+
+    <!-- ══ Sidebar ══ -->
+    <nav class="sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-icon">◈</span>
+        <span class="brand-text">WFlow</span>
+      </div>
+      <div class="sidebar-nav">
+        <a @click="page='dashboard'" :class="{active: page==='dashboard'}">
+          <span class="nav-icon">◷</span> Dashboard
+        </a>
+        <a @click="page='workflows'" :class="{active: page==='workflows'}">
+          <span class="nav-icon">⊞</span> Workflows
+        </a>
+        <a @click="viewRunId=null;page='runs'" :class="{active: page==='runs'}">
+          <span class="nav-icon">▶</span> Runs
+        </a>
+        <a @click="page='cron'" :class="{active: page==='cron'}">
+          <span class="nav-icon">⏱</span> Cron
+        </a>
+      </div>
+      <div class="sidebar-footer"><span class="version">v0.1.0</span></div>
+    </nav>
+
+    <!-- ══ Main ══ -->
+    <main>
+      <!-- Dashboard -->
+      <div x-show="page === 'dashboard'" x-html="dashboardHTML"></div>
+
+      <!-- Workflows -->
+      <div x-show="page === 'workflows'">
+        <div class="page-header">
+          <h2>Workflows</h2>
+          <button class="btn primary" @click="showCreateWorkflow=!showCreateWorkflow">
+            <span x-text="showCreateWorkflow ? '−' : '+'"></span> Create
+          </button>
+        </div>
+
+        <!-- Create form -->
+        <div x-show="showCreateWorkflow" class="card mt" x-transition>
+          <textarea x-ref="wfConfig" rows="12" placeholder='{"name":"my-workflow","nodes":[...],"edges":[...],"inputs":{...}}'></textarea>
+          <div class="mt" style="display:flex;gap:8px">
+            <button class="btn primary" @click="createWorkflow()">Save</button>
+            <button class="btn" @click="showCreateWorkflow=false">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Workflow list -->
+        <template x-if="workflows.length === 0 && !showCreateWorkflow">
+          <div class="empty-state mt"><div class="empty-icon">⚡</div><p>No workflows yet.</p></div>
+        </template>
+
+        <template x-if="workflows.length > 0">
+          <div>
+            <template x-for="w in workflows" :key="w.id">
+              <div class="wf-card">
+                <div class="wf-card-header">
+                  <div>
+                    <span class="wf-name" x-text="w.name"></span>
+                    <code class="wf-id" x-text="w.id.slice(0,8)"></code>
+                  </div>
+                  <span class="badge" :class="w.status" x-text="w.status"></span>
+                </div>
+
+                <!-- Metadata row -->
+                <div class="wf-meta">
+                  <span x-text="getWorkflowNodeCount(w.id) + ' nodes'"></span>
+                  <span class="meta-sep">·</span>
+                  <span x-text="getWorkflowEdgeCount(w.id) + ' edges'"></span>
+                  <span class="meta-sep">·</span>
+                  <span x-text="w.created_at?.slice(0,10)"></span>
+                </div>
+
+                <!-- Input schema -->
+                <div class="wf-inputs" x-show="Object.keys(getWorkflowInputs(w.id)).length > 0">
+                  <div class="wf-inputs-label">Input Schema</div>
+                  <template x-for="(field, key) in getWorkflowInputs(w.id)" :key="key">
+                    <div class="wf-input-field">
+                      <code class="field-key" x-text="key"></code>
+                      <span class="field-type" x-text="field.type || 'string'"></span>
+                      <span class="field-required" x-show="field.required" style="color:var(--red)">*</span>
+                      <span class="field-desc" x-show="field.description" x-text="field.description"></span>
+                    </div>
+                  </template>
+                </div>
+
+                <div class="wf-card-actions">
+                  <button class="btn primary sm" @click="openRunForm(w.id)">▶ Run</button>
+                  <button class="btn sm" @click="viewWorkflowDAG(w.id)">◈ DAG</button>
+                  <button class="btn danger sm" @click="deleteWorkflow(w.id)">Del</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Run Form Modal -->
+        <div class="modal-overlay" x-show="runFormWfId !== null" @click.self="closeRunForm()" x-transition.opacity>
+          <div class="modal-card" x-show="runFormWfId !== null" x-transition>
+            <div class="modal-header">
+              <h3>Start Run</h3>
+              <button class="btn ghost sm" @click="closeRunForm()">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="run-form-wf-name" x-text="runFormWfName"></div>
+
+              <template x-if="Object.keys(runFormInputs).length === 0">
+                <p class="muted">This workflow has no input schema defined.</p>
+              </template>
+
+              <template x-for="(field, key) in runFormInputs" :key="key">
+                <div class="form-group">
+                  <label>
+                    <span x-text="key"></span>
+                    <span class="field-required" x-show="field.required" style="color:var(--red)">*</span>
+                    <span class="field-type-badge" x-text="field.type || 'string'"></span>
+                  </label>
+                  <div class="form-hint" x-show="field.description" x-text="field.description"></div>
+                  <input type="text"
+                    :placeholder="field.description || 'Enter ' + key"
+                    x-model="runFormValues[key]">
+                </div>
+              </template>
+            </div>
+            <div class="modal-footer">
+              <button class="btn" @click="closeRunForm()">Cancel</button>
+              <button class="btn primary" @click="submitRunForm()">Start Run</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- DAG Modal -->
+        <div class="modal-overlay" x-show="dagWorkflowId !== null" @click.self="closeWorkflowDAG()" x-transition.opacity>
+          <div class="dag-modal" x-show="dagWorkflowId !== null" x-transition>
+            <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+              <button class="btn ghost sm" @click="closeWorkflowDAG()">✕</button>
+            </div>
+            <div x-html="dagWorkflowHTML"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Runs -->
+      <div x-show="page === 'runs'" x-html="runsHTML"></div>
+
+      <!-- Cron -->
+      <div x-show="page === 'cron'">
+        <div class="page-header">
+          <h2>Cron Jobs</h2>
+          <button class="btn primary" @click="showCreateCron=!showCreateCron">
+            <span x-text="showCreateCron ? '−' : '+'"></span> New Job
+          </button>
+        </div>
+        <div x-show="showCreateCron" class="card mt" x-transition>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label>Workflow</label>
+              <select x-ref="cronWfSelect" @change="onCronWfSelect()">
+                <option value="">— Select workflow —</option>
+                <template x-for="w in workflows" :key="w.id">
+                  <option :value="w.id" x-text="w.name + ' (' + w.id.slice(0,8) + ')'"></option>
+                </template>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1">
+              <label>Cron Expression</label>
+              <input type="text" x-ref="cronExpr" placeholder="*/5 * * * *" autocomplete="off">
+              <div class="cron-presets mt-sm">
+                <span class="preset-label">Quick:</span>
+                <button class="btn sm ghost" @click="applyCronPreset('*/1 * * * *')">1min</button>
+                <button class="btn sm ghost" @click="applyCronPreset('*/5 * * * *')">5min</button>
+                <button class="btn sm ghost" @click="applyCronPreset('*/10 * * * *')">10min</button>
+                <button class="btn sm ghost" @click="applyCronPreset('*/30 * * * *')">30min</button>
+                <button class="btn sm ghost" @click="applyCronPreset('0 * * * *')">Hourly</button>
+                <button class="btn sm ghost" @click="applyCronPreset('0 9 * * *')">Daily 9am</button>
+                <button class="btn sm ghost" @click="applyCronPreset('0 9 * * 1-5')">Weekdays</button>
+              </div>
+              <div class="form-hint">5-field: <code>min hour day month weekday</code> &nbsp;|&nbsp; 6-field: <code>sec min hour day month weekday</code></div>
+            </div>
+          </div>
+
+          <!-- Dynamic input fields from workflow schema -->
+          <template x-if="Object.keys(cronFormInputs).length > 0">
+            <div class="wf-inputs">
+              <div class="wf-inputs-label">Parameters</div>
+              <template x-for="(field, key) in cronFormInputs" :key="key">
+                <div class="form-group">
+                  <label>
+                    <span x-text="key"></span>
+                    <span class="field-required" x-show="field.required" style="color:var(--red)">*</span>
+                    <span class="field-type-badge" x-text="field.type || 'string'"></span>
+                  </label>
+                  <div class="form-hint" x-show="field.description" x-text="field.description"></div>
+                  <input type="text" :placeholder="field.description || 'Enter ' + key" x-model="cronFormValues[key]">
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <div class="mt" style="display:flex;gap:8px">
+            <button class="btn primary" @click="createCron()">Create</button>
+            <button class="btn" @click="showCreateCron=false">Cancel</button>
+          </div>
+        </div>
+
+        <template x-if="cronJobs.length === 0 && !showCreateCron">
+          <div class="empty-state mt"><div class="empty-icon">⏱</div><p>No cron jobs.</p></div>
+        </template>
+
+        <template x-if="cronJobs.length > 0">
+          <div class="card mt">
+            <table>
+              <thead><tr><th>Workflow</th><th>Schedule</th><th>State</th><th>Latest Run</th><th></th></tr></thead>
+              <tbody>
+                <template x-for="j in cronJobs" :key="j.id">
+                  <tr>
+                    <td><span x-text="j.workflow_name||''" class="text-sm"></span> <code class="muted" x-text="j.workflow_id?.slice(0,8)"></code></td>
+                    <td><code x-text="j.cron_expr" class="text-sm"></code></td>
+                    <td>
+                      <span class="toggle-dot" :class="j.enabled ? 'on' : 'off'"></span>
+                      <span x-text="j.enabled ? 'Active' : 'Paused'" class="text-sm"></span>
+                    </td>
+                    <td>
+                      <template x-if="j.last_run_id">
+                        <a @click="viewRun(j.last_run_id)" class="text-sm" style="color:var(--cyan);cursor:pointer;text-decoration:underline" x-text="j.last_run_id.slice(0,8)"></a>
+                      </template>
+                      <span x-show="!j.last_run_id" class="muted">—</span>
+                    </td>
+                    <td>
+                      <button class="btn sm" @click="toggleCron(j.id)" x-text="j.enabled ? 'Pause' : 'Resume'"></button>
+                      <button class="btn danger sm" @click="deleteCron(j.id)">Delete</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ══ Review Modal ══ -->
+  <div class="review-modal-overlay" x-show="showReviewModal" @click.self="closeReviewModal()" x-transition.opacity>
+    <div class="review-modal" x-show="showReviewModal" x-transition>
+      <!-- Header -->
+      <div class="review-modal-header">
+        <div class="review-modal-header-left">
+          <div class="review-modal-icon">👤</div>
+          <div>
+            <div class="review-modal-title" x-text="'Review: ' + reviewNodeLabel"></div>
+            <div class="review-modal-subtitle">Human Review Decision Required</div>
+          </div>
+        </div>
+        <button class="btn ghost sm" @click="closeReviewModal()">✕</button>
+      </div>
+
+      <!-- Body -->
+      <div class="review-modal-body">
+        <!-- Review prompt -->
+        <div class="review-prompt-box" x-show="reviewPrompt">
+          <div class="review-prompt-box-header">
+            <span class="review-prompt-box-label">📋 Review Instructions</span>
+          </div>
+          <div class="review-prompt-box-text" x-text="reviewPrompt"></div>
+        </div>
+
+        <!-- Upstream output -->
+        <div class="review-upstream-box" x-show="reviewUpstreamJSON">
+          <div class="review-upstream-header">
+            <span class="review-upstream-label">↑ Upstream Node Output</span>
+            <span class="review-upstream-badge">JSON</span>
+          </div>
+          <pre class="review-upstream-content" x-text="reviewUpstreamJSON"></pre>
+        </div>
+
+        <!-- Decision -->
+        <div class="review-decision-section">
+          <span class="review-decision-label">Your Decision</span>
+          <div class="review-decision-options">
+            <!-- Approve -->
+            <div class="review-decision-card"
+                 :class="{ 'selected-approve': reviewDecision === 'approved' }"
+                 @click="selectReviewDecision('approved')">
+              <div class="review-decision-card-icon approve-icon">✓</div>
+              <div class="review-decision-card-title">Approve</div>
+              <div class="review-decision-card-desc">Pass through — upstream output is correct. Workflow continues to the next node.</div>
+            </div>
+            <!-- Reject -->
+            <div class="review-decision-card"
+                 :class="{ 'selected-reject': reviewDecision === 'rejected' }"
+                 @click="selectReviewDecision('rejected')">
+              <div class="review-decision-card-icon reject-icon">✕</div>
+              <div class="review-decision-card-title">Reject</div>
+              <div class="review-decision-card-desc">Send back — the upstream node needs revision. Feedback is required.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feedback (shown on reject) -->
+        <div class="review-feedback-section" x-show="reviewDecision === 'rejected'">
+          <label class="review-feedback-label">Rejection Feedback (required)</label>
+          <textarea
+            x-model="reviewFeedback"
+            placeholder="Explain what needs to be changed and why. This feedback will be sent to the upstream node for revision…"
+            rows="3"
+          ></textarea>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="review-modal-footer">
+        <span class="review-modal-footer-hint" x-show="!reviewDecision">← Select Approve or Reject above</span>
+        <span class="review-modal-footer-hint" x-show="reviewDecision === 'rejected' && !reviewFeedback.trim()">⚠ Feedback is required for rejection</span>
+        <span class="review-modal-footer-hint" x-show="reviewDecision === 'approved'" style="color:var(--green)">✓ Ready to approve</span>
+        <span class="review-modal-footer-hint" x-show="reviewDecision === 'rejected' && reviewFeedback.trim()" style="color:var(--red)">Ready to reject with feedback</span>
+        <div class="review-modal-footer-actions">
+          <button class="btn" @click="closeReviewModal()">Cancel</button>
+          <button class="review-submit-btn"
+                  :class="reviewDecision === 'approved' ? 'approve-btn' : 'reject-btn'"
+                  :disabled="!reviewDecision || reviewSubmitting || (reviewDecision === 'rejected' && !reviewFeedback.trim())"
+                  @click="submitReviewDecision()">
+            <span class="review-spinner" x-show="reviewSubmitting"></span>
+            <span x-show="!reviewSubmitting && reviewDecision === 'approved'">✓ Approve & Continue</span>
+            <span x-show="!reviewSubmitting && reviewDecision === 'rejected'">✕ Reject & Send Back</span>
+            <span x-show="reviewSubmitting">Submitting…</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/utils.js?v=11"></script>
+  <script src="/js/app.js?v=11"></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</body>
+</html>
