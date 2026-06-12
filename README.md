@@ -251,16 +251,111 @@ wflow cron remove <cron-id>
 
 ---
 
+## Skills 与脚本
+
+wflow 启动时自动检测项目根目录下的 `.claude`、`.opencode`、`.wflow` 目录，并在每次 run 的工作目录中创建**拷贝或符号链接**：
+
+```
+项目根目录/
+├── .claude/
+│   ├── settings.json      # Claude Code 配置
+│   ├── CLAUDE.md          # 项目级别指令（Claude 自动读取）
+│   └── skills/            # 自定义 skills
+├── .opencode/
+│   └── opencode.json      # OpenCode 配置
+└── .wflow/
+    └── validate.py        # 自定义脚本 / 工具
+```
+
+### 工作原理
+
+1. 服务启动时通过 `WFLOW_PROJECT_DIR` 环境变量（默认当前目录）检测上述目录
+2. 每次创建 run 工作目录时，将检测到的目录**复制或符号链接**进去
+3. 工作目录内的 Claude/OpenCode 节点可直接使用项目 skills、配置和脚本
+
+### 配置方式
+
+```bash
+# 方式 1: 在项目根目录启动服务（自动检测当前目录）
+cd my-project
+wflow server start --port 8100
+
+# 方式 2: 显式指定项目目录
+wflow server start --port 8100 --project-dir /path/to/project
+
+# 方式 3: 环境变量
+WFLOW_PROJECT_DIR=/path/to/project wflow server start
+```
+
+### 使用场景
+
+| 场景 | 配置方式 |
+|------|---------|
+| Claude 节点触发 skill | 项目根目录下放置 `.claude/skills/` 或 `.claude/CLAUDE.md` |
+| OpenCode 节点使用配置 | 项目根目录下放置 `.opencode/opencode.json` |
+| Script 节点引用脚本 | `"command": "python .wflow/validate.py"`（脚本放在 `.wflow/` 下）|
+
+> **注意：** 拷贝发生在 run 创建时。如果更新了 skill 或配置，需要**重新启动 run** 才会生效。
+
+---
+
 ## Web UI
 
-启动服务后访问 `http://localhost:8100`：
+启动服务后访问 `http://localhost:8100`。
+
+### 页面概览
 
 | 页面 | 功能 |
 |------|------|
 | Dashboard | 运行中/已完成/失败工作流统计 |
-| Workflows | 列表、JSON 创建、一键启动、DAG 拓扑图 |
-| Runs | 运行列表、DAG 状态图(支持缩放/拖拽)、节点执行详情、工作目录文件浏览、日志查看 |
-| Cron | 定时任务管理：动态参数表单、Cron 预设、启用/禁用 |
+| Workflows | 列表、JSON 创建、一键启动、**DAG 拓扑图预览** |
+| Runs | 运行列表、**DAG 状态图(支持 Ctrl+滚轮缩放/拖拽)**、节点执行详情、工作目录文件浏览、日志查看 |
+| Cron | 定时任务管理：**动态参数表单**、Cron 预设、启用/禁用 |
+
+### Workflows 页面
+
+![Workflows](docs/images/workflows.jpg)
+
+1. 点击 **+ Create** 粘贴 JSON 创建工作流
+2. 每个工作流卡片显示节点数、边数、输入 Schema
+3. 点击 **▶ Run** → 弹窗填写参数 → 启动
+4. 点击 **◈ DAG** → 查看工作流拓扑图
+5. 点击 **Del** → 删除
+
+### Runs 页面
+
+![Run Detail](docs/images/run-detail.jpg)
+
+1. 点击运行记录旁的 **Details** 进入详情
+2. **Workflow Graph**: 展开查看 DAG 状态图
+   - 绿色节点 = 已完成，橙色 = 运行中，紫色 = 等待审核
+   - 绿色边 = 已通过路径，灰色虚线 = 回路
+   - **Ctrl + 滚轮** 缩放，鼠标拖拽平移
+3. **Files**: 左侧文件树浏览器，右侧文件内容查看，支持拖动分隔条调整宽度
+4. **Node Executions**: 折叠展开每个节点的执行详情（输入/输出/错误）
+5. **Recent Logs**: 最新日志在上，textarea 展示，支持滚动
+
+### 人工审核
+
+<!-- TODO: 截图审核弹窗 -->
+![Review](docs/images/review.jpg)
+
+当工作流执行到 `human_review` 节点时：
+1. Runs 页面该 run 旁出现 **Review** 按钮
+2. 点击进入审核弹窗，查看上游产出和审核说明
+3. 选择 **Approve**（通过）或 **Reject**（驳回）
+4. 驳回需填写反馈意见，上游节点将根据反馈重做
+
+### Cron 页面
+
+<!-- TODO: 截图 cron 创建表单 -->
+![Cron](docs/images/crons.jpg)
+
+1. 点击 **+ New Job** 展开创建表单
+2. **Workflow** 下拉选择 → 自动加载该工作流的输入 Schema，每个参数独立填写
+3. **Cron Expression**: 点击预设按钮（5min / Hourly / Daily 9am 等）快速填入，也支持手动输入 5 或 6 字段表达式
+4. 表格中点击 **Latest Run** 列的 run ID 可跳转查看运行详情
+5. **Pause / Resume** 启用/禁用定时任务
 
 ---
 
@@ -318,7 +413,7 @@ wflow server start
 | **Session 复用** | 每个 (run_id, node_id) 一个固定 session。回路重入同一节点时自动 Resume |
 | **回路检测** | 基于无条件边构建 ancestor 关系，条件边仅当 target 是 source 的祖先时才触发 staleness |
 | **流式日志** | Claude/OpenCode 使用 `stream-json` 输出，实时记录工具调用和状态 |
-| **工作目录隔离** | 每个 run 创建 `workspace/<run_id[:8]>-<uuid>` 独立目录 |
+| **工作目录隔离** | 每个 run 创建 `workspace/<run_id[:8]>-<uuid>` 独立目录，自动拷贝项目的 `.claude`/`.opencode`/`.wflow` 配置 |
 | **条件分支** | Edge `condition` 支持 `==`/`!=` 比较，模板变量引用上游输出 |
 | **断点续跑** | 任务状态和 work_dir 持久化到 DB，支持重跑和恢复 |
 | **人工审核透传** | `human_review` approved 时将上游节点真实产出传递到下游 |
