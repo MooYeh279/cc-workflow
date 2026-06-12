@@ -398,8 +398,12 @@ window.appData = function () {
       var runData = null;
       // Access via the rendered HTML's data — re-fetch run detail for fresh data
       var self = this;
-      apiGet('/runs/' + runId).then(function(run) {
-        var ne = (run.nodes||[]).find(function(n){return n.node_id === nodeId;});
+      // _=Date.now() prevents browser caching of the run detail
+      apiGet('/runs/' + runId, {_: Date.now()}).then(function(run) {
+        // Find the LATEST execution for this node (DB returns sorted by started_at ASC)
+        var matching = (run.nodes||[]).filter(function(n){return n.node_id === nodeId;});
+        if (matching.length === 0) return;
+        var ne = matching[matching.length - 1]; // last = newest
         if (!ne) return;
 
         // Parse upstream output from node input

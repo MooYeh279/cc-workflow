@@ -110,7 +110,7 @@ class WorkflowExecutor:
     ) -> bool:
         """Execute the workflow. Returns True on success, False on failure."""
         # --- Work directory setup ---
-        work_dir = self._ensure_work_dir(run_id, context)
+        work_dir = await self._ensure_work_dir(run_id, context)
 
         start_ids = self._find_start_nodes(spec)
         if not start_ids:
@@ -188,12 +188,11 @@ class WorkflowExecutor:
 
     # ── Work directory ──────────────────────────────────────────────────────
 
-    def _ensure_work_dir(self, run_id: str, context: TemplateContext) -> str:
+    async def _ensure_work_dir(self, run_id: str, context: TemplateContext) -> str:
         """Create or reuse the working directory for this run.
 
-        ``git init`` anchors the workspace as a standalone repo so that
-        Claude Code / OpenCode CLI stop walking up at the workspace
-        boundary instead of escaping to the parent ``.git`` directory.
+        Persists the *work_dir* to the DB immediately so the Files API can
+        find it even while the workflow is still executing.
         """
         work_dir = context.get("run", {}).get("work_dir")
         if work_dir:
@@ -209,6 +208,17 @@ class WorkflowExecutor:
 
         if self._project_dirs:
             link_project_dirs(work_dir, self._project_dirs, self._logger)
+
+        # Persist work_dir immediately so the web UI Files panel works during execution
+        try:
+            stmt = select(WorkflowRun).where(WorkflowRun.id == run_id)
+            r = await self._db.execute(stmt)
+            bg_run = r.scalar_one_or_none()
+            if bg_run is not None:
+                bg_run.context = json.dumps(context, ensure_ascii=False)
+                await self._db.commit()
+        except Exception:
+            pass  # DB operation may not be available in test mocks
 
         return work_dir
 
