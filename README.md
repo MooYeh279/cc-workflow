@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-cd workflow-orchestrator
+cd cc-workflow
 pip install -e ".[dev]"
 wflow --help
 ```
