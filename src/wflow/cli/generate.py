@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -260,11 +261,43 @@ def validate_workflow_json(data: dict[str, Any]) -> list[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Console logger — prints adapter streaming output to stderr
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CONSOLE_LOGGER: logging.Logger | None = None
+
+
+def _get_console_logger() -> logging.Logger:
+    """Create (or reuse) a logger that writes adapter stream events to stderr.
+
+    Format is minimal — the adapters already prefix messages with
+    ``[node_id]``, so we only emit the raw message.
+    """
+    global _CONSOLE_LOGGER
+    if _CONSOLE_LOGGER is not None:
+        return _CONSOLE_LOGGER
+
+    logger = logging.getLogger("wflow.generate")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    _CONSOLE_LOGGER = logger
+    return logger
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Generation
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def _generate_with_claude(prompt: str, model: str | None, timeout: int, cwd: str) -> dict[str, Any]:
+async def _generate_with_claude(
+    prompt: str, model: str | None, timeout: int, cwd: str, logger: logging.Logger,
+) -> dict[str, Any]:
     """Generate workflow JSON using Claude Code CLI."""
     adapter = ClaudeCLI()
     return await adapter.run(
@@ -277,10 +310,13 @@ async def _generate_with_claude(prompt: str, model: str | None, timeout: int, cw
         model=model,
         timeout_seconds=timeout,
         cwd=cwd,
+        logger=logger,
     )
 
 
-async def _generate_with_opencode(prompt: str, model: str | None, timeout: int, cwd: str) -> dict[str, Any]:
+async def _generate_with_opencode(
+    prompt: str, model: str | None, timeout: int, cwd: str, logger: logging.Logger,
+) -> dict[str, Any]:
     """Generate workflow JSON using OpenCode CLI."""
     adapter = OpenCodeCLI()
     return await adapter.run(
@@ -291,6 +327,7 @@ async def _generate_with_opencode(prompt: str, model: str | None, timeout: int, 
         model=model,
         timeout_seconds=timeout,
         cwd=cwd,
+        logger=logger,
     )
 
 
@@ -318,12 +355,13 @@ async def generate_workflow_json(
     """
     cwd = cwd or os.getcwd()
     prompt = build_generation_prompt(description)
+    logger = _get_console_logger()
 
     try:
         if backend == "claude":
-            result = await _generate_with_claude(prompt, model, timeout, cwd)
+            result = await _generate_with_claude(prompt, model, timeout, cwd, logger)
         else:
-            result = await _generate_with_opencode(prompt, model, timeout, cwd)
+            result = await _generate_with_opencode(prompt, model, timeout, cwd, logger)
     except (ClaudeCLITimeout, OpenCodeTimeout):
         raise click.ClickException(
             f"Generation timed out after {timeout}s. "
