@@ -94,5 +94,5 @@ def navigate_to(page, tab_name: str):
 def init_page(page, server_url):
     """Navigate to WFlow and wait for Alpine to boot."""
     page.goto(server_url)
-    page.wait_for_selector(".nav-links", timeout=10000)
+    page.wait_for_selector(".sidebar-nav", timeout=10000)
     page.wait_for_timeout(3000)

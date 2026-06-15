@@ -155,7 +155,6 @@ class _SessionNodeHandler(NodeHandler):
             node_id=node_config["id"],
             session_id=session_id,
             is_resume=is_resume,
-            output_schema=node_config["output"],
             model=node_config.get("model"),
             timeout_seconds=node_config.get("retry", {}).get("timeout_seconds", 1800),
             cwd=cwd,

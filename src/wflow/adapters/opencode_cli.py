@@ -63,22 +63,6 @@ class OpenCodeCLI:
             cmd.extend(["--dir", cwd])
         return cmd, effective_sid
 
-    @staticmethod
-    def _try_parse_json(text: str) -> dict[str, Any] | None:
-        """Try to parse *text* as a JSON dict.  Returns ``None`` on failure."""
-        if not text.strip():
-            return None
-        try:
-            obj = json.loads(text)
-            if isinstance(obj, dict):
-                return obj
-        except json.JSONDecodeError:
-            pass
-        try:
-            return extract_json(text)
-        except JSONParseError:
-            return None
-
     # ------------------------------------------------------------------
     # Streaming stdout consumer — log only, no result extraction
     # ------------------------------------------------------------------
@@ -218,9 +202,14 @@ class OpenCodeCLI:
             raise OpenCodeError("No text found in opencode export — model produced no output")
 
         # Extract JSON from the text
+        parsed_result: dict[str, Any] | None = None
         try:
-            parsed_result = json.loads(combined)
+            candidate = json.loads(combined)
+            if isinstance(candidate, dict):
+                parsed_result = candidate
         except json.JSONDecodeError:
+            pass
+        if parsed_result is None:
             try:
                 parsed_result = extract_json(combined)
             except JSONParseError as e:
@@ -241,7 +230,6 @@ class OpenCodeCLI:
         node_id: str,
         session_id: str | None,
         is_resume: bool,
-        output_schema: dict[str, Any],
         model: str | None = None,
         timeout_seconds: int = 1800,
         env: dict[str, str] | None = None,
@@ -275,18 +263,21 @@ class OpenCodeCLI:
             cwd=cwd,
         )
 
+        stderr_task: asyncio.Task[bytes] | None = None
         try:
             if proc.stdin:
                 proc.stdin.write(prompt.encode("utf-8"))
                 await proc.stdin.drain()
                 proc.stdin.close()
 
+            # Read stderr concurrently to prevent pipe-buffer deadlock.
+            stderr_task = asyncio.create_task(proc.stderr.read())
+
             extracted_sid = await asyncio.wait_for(
                 self._consume_stream(proc, node_id, logger),
                 timeout=timeout_seconds,
             )
 
-            stderr_bytes = await proc.stderr.read()
             await proc.wait()
 
         except asyncio.TimeoutError:
@@ -303,7 +294,22 @@ class OpenCodeCLI:
             except ProcessLookupError:
                 pass
             raise
+        except Exception:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            raise
+        finally:
+            if stderr_task and not stderr_task.done():
+                stderr_task.cancel()
 
+        stderr_bytes = b""
+        if stderr_task:
+            try:
+                stderr_bytes = await stderr_task
+            except asyncio.CancelledError:
+                pass
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
         if logger and stderr:
             logger.info(f"[{node_id}] STDERR: {stderr[:300]}")

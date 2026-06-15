@@ -36,7 +36,9 @@ def extract_json(text: str) -> dict[str, Any]:
     m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
     if m:
         try:
-            return json.loads(m.group(1).strip())
+            parsed = json.loads(m.group(1).strip())
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
 
@@ -45,7 +47,9 @@ def extract_json(text: str) -> dict[str, Any]:
     brace_end = text.rfind("}")
     if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
         try:
-            return json.loads(text[brace_start:brace_end + 1])
+            parsed = json.loads(text[brace_start:brace_end + 1])
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
 

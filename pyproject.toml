@@ -59,5 +59,9 @@ wflow = ["web/**/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = "-v --cov=src/wflow --cov-report=term-missing"
+markers = [
+    "e2e: End-to-end tests requiring Playwright browser + running server. Run separately with: pytest -m e2e",
+]

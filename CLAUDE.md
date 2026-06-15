@@ -8,7 +8,41 @@
 - 任务启动、状态查看、日志追踪
 - Cron 管理
 - 服务器启动管理
-- 入口: `python -m wflow` (via `src/wflow/__main__.py`)
+- **工作流生成**: 通过自然语言描述自动生成工作流 JSON (`wflow generate`)
+- 入口: `wflow` (console_scripts entry point)
+
+#### 工作流生成 (`wflow generate`)
+通过自然语言描述，调用 Claude Code CLI 或 OpenCode CLI 自动生成完整的工作流 JSON 文件。
+
+```bash
+# 基础用法
+wflow generate "代码审查工作流：先写代码，再审查，不通过则修改"
+
+# 指定后端和模型
+wflow generate "多源研究合并" --backend opencode -m deepseek-v4-pro
+
+# 指定输出路径
+wflow generate "需求分析 → 设计 → 人工审核" -o my-workflow.json
+
+# 预览不写入文件
+wflow generate "自动化测试流水线" --dry-run
+
+# 强制覆盖已有文件
+wflow generate "CI/CD 流水线" -f
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-b, --backend` | 后端选择：`claude`（默认）或 `opencode` |
+| `-m, --model` | 模型名称，如 `sonnet`、`deepseek-v4-pro` |
+| `-o, --output` | 输出文件路径（默认：`<workflow-name>.json`） |
+| `-t, --timeout` | 超时秒数（默认 600） |
+| `--dry-run` | 仅验证并打印 JSON，不写入文件 |
+| `-f, --force` | 覆盖已存在的输出文件 |
+
+生成流程：用户描述 → 构建 meta-prompt（含工作流 JSON 格式参考） → 调用 LLM → 提取 JSON → Pydantic + 语义校验 → 写入文件。
+
+实现位于 `src/wflow/cli/generate.py`，直接调用适配器（非通过服务器），可离线使用。
 
 ### 2. Web 用户界面 (`src/wflow/web/`)
 - 侧边栏导航 (Dashboard / Workflows / Runs / Cron)
@@ -103,3 +137,64 @@ NodeHandler (ABC)
 - APScheduler AsyncIOScheduler
 - Claude Code CLI: `--output-format stream-json --input-format stream-json`
 - OpenCode CLI: `opencode run --format json` (stdin pipe)
+
+## 适配器 (`src/wflow/adapters/`)
+
+### ClaudeCLI (`claude_cli.py`)
+- 流式解析 stream-json 输出，结果在 streaming 过程中内联提取（单次遍历）
+- 手动缓冲读取 (`proc.stdout.read(65536)`) 避免 `StreamReader.readline()` 的 64KB 限制
+- stderr 并发读取 (`asyncio.create_task`) 防止管道缓冲区死锁
+- 完善异常处理：`TimeoutError`、通用 `Exception` 均会 kill 子进程 + finally 清理
+
+### OpenCodeCLI (`opencode_cli.py`)
+- 策略：`opencode run` 流式 stdout 仅用于日志和 session ID 提取；结果始终通过 `opencode export <sid>` 获取
+- stderr 并发读取（同上）
+- 完善异常处理（同上）
+- `_export_and_extract` 对 `json.loads` 返回非 dict 有 isinstance 守卫
+
+### ScriptRunner (`script_runner.py`)
+- 子进程执行：context 通过 stdin JSON 传入，结果从 stdout JSON 解析
+- 支持超时 kill + `ScriptError` 异常
+
+### JSON 解析 (`common/json_parser.py`)
+- `extract_json(text)` 三种策略：直接解析 → fenced code block → 平衡括号
+- 所有策略均保证返回 `dict[str, Any]`（有 isinstance 守卫）
+
+## 重试机制
+- 节点执行失败时，executor 在同一条 `NodeExecution` 记录上进行重试
+- 重试成功后会清除 `ne.error` 字段（防止 UI 展示陈旧的重试错误）
+- 重试过程的错误通过 `RunLog` (warn 级别) 记录，可在日志查看
+
+## 测试
+
+### 测试组织
+
+| 目录 | 类型 | 运行方式 |
+|------|------|---------|
+| `tests/test_adapters/` | 适配器单元测试 | `pytest` |
+| `tests/test_engine/` | 引擎单元测试 | `pytest` |
+| `tests/test_api/` | API 集成测试 (FastAPI TestClient) | `pytest` |
+| `tests/test_models/` | ORM 模型测试 (SQLite 内存库) | `pytest` |
+| `tests/test_services/` | 服务层单元测试 | `pytest` |
+| `tests/test_cli/` | CLI 命令测试 (Click CliRunner) | `pytest` |
+| `tests/e2e/` | E2E 测试 (Playwright + FastAPI) | `pytest -m e2e` |
+
+### 运行测试
+
+```bash
+# 默认：运行全部单元/集成/API 测试（排除 E2E）
+pytest                                    # 117 passed
+
+# 单独运行 E2E 测试
+pytest -m e2e                             # 11 passed
+
+# 两者互斥运行 —— pytest-playwright 和 pytest-asyncio 管理事件循环的方式
+# 不兼容，混跑会导致 async 测试全部 RuntimeError。tests/conftest.py 中的
+# pytest_collection_modifyitems hook 确保它们不会同时执行。
+```
+
+### E2E 测试说明
+- 需要 Playwright 浏览器 (`playwright install chromium`)
+- `tests/e2e/conftest.py` 自动启动 FastAPI 测试服务器 (port 18100)
+- 测试标记为 `@pytest.mark.e2e`，通过 `pytestmark = pytest.mark.e2e` 模块级应用
+- 工作流名使用 UUID 后缀避免跨测试冲突

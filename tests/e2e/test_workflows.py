@@ -4,6 +4,8 @@ import pytest
 from playwright.sync_api import expect
 from conftest import init_page
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture(autouse=True)
 def _setup(page, server_url):
@@ -24,7 +26,7 @@ def test_workflows_page_loads(page):
 
 def test_create_button_visible(page):
     """Create Workflow button should be visible."""
-    btn = page.locator("button", has_text="Create Workflow")
+    btn = page.locator("button", has_text="+ Create")
     expect(btn).to_be_visible()
 
 

@@ -1,10 +1,12 @@
 """Shared E2E test helpers for API setup."""
 
+import uuid
+
 
 def create_test_workflow(api_client):
     """Create a simple workflow via API and return its ID."""
     resp = api_client.post("/api/v1/workflows", json={
-        "name": "e2e-test-wf",
+        "name": f"e2e-test-wf-{uuid.uuid4().hex[:8]}",
         "config": {
             "nodes": [{
                 "id": "start", "type": "script",

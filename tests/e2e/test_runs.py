@@ -6,6 +6,8 @@ from playwright.sync_api import expect
 from conftest import init_page
 from helpers import create_test_workflow, create_test_run
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture(autouse=True)
 def _setup(api_client, page, server_url):

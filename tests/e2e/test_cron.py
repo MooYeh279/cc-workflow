@@ -6,6 +6,8 @@ from playwright.sync_api import expect
 from conftest import init_page
 from helpers import create_test_workflow, create_test_cron
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture(autouse=True)
 def _setup(api_client, page, server_url):
@@ -49,5 +51,5 @@ def test_cron_toggle_via_api(page, api_client):
     page.wait_for_timeout(500)
 
     main_text = page.locator("main").inner_text()
-    # Should show ✗ for disabled
-    assert "✗" in main_text
+    # After toggle, status should show "Paused" (was "Active")
+    assert "Paused" in main_text
