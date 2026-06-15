@@ -24,5 +24,5 @@ def get_adapters(request: Request) -> dict[str, Any]:
     return {
         "handlers": request.app.state.handlers,
         "session_factory": request.app.state.SessionLocal,
-        "project_dirs": getattr(request.app.state, "project_dirs", []),
+        "wflow_dir": getattr(request.app.state, "wflow_dir", None),
     }

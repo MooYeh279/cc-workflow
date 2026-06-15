@@ -16,7 +16,8 @@ from wflow.adapters.claude_cli import ClaudeCLIError, ClaudeCLITimeout
 from wflow.adapters.opencode_cli import OpenCodeError, OpenCodeTimeout
 from wflow.adapters.script_runner import ScriptError
 from wflow.common.time_utils import utc_now_iso
-from wflow.common.workspace import link_project_dirs
+from pathlib import Path
+from wflow.common.workspace import setup_work_dir
 from wflow.engine.node_runner import NodeRunner
 from wflow.engine.session_manager import SessionManager
 from wflow.engine.state_machine import RunStatus, RunStateMachine
@@ -90,13 +91,13 @@ class WorkflowExecutor:
         node_runner: NodeRunner,
         session_manager: SessionManager,
         logger: logging.Logger | None = None,
-        project_dirs: list | None = None,
+        wflow_dir: Path | None = None,
     ):
         self._db = db
         self._node_runner = node_runner
         self._session_mgr = session_manager
         self._logger = logger
-        self._project_dirs = project_dirs or []
+        self._wflow_dir = wflow_dir
         self._state_machine = RunStateMachine()
 
     # ── Public API ──────────────────────────────────────────────────────────
@@ -206,8 +207,17 @@ class WorkflowExecutor:
         context.setdefault("run", {})["work_dir"] = work_dir
         self._log(run_id, None, "info", f"Created work directory: {work_dir}")
 
-        if self._project_dirs:
-            link_project_dirs(work_dir, self._project_dirs, self._logger)
+        try:
+            if self._wflow_dir:
+                self._log(run_id, None, "info",
+                          f"Linking .wflow from {self._wflow_dir}")
+            else:
+                self._log(run_id, None, "info",
+                          "No .wflow directory configured — creating .claude/ and .opencode/ only")
+            setup_work_dir(Path(work_dir), self._wflow_dir, self._logger)
+        except OSError as e:
+            self._log(run_id, None, "warn",
+                      f"Workspace symlink setup failed: {e} — run will proceed without .wflow links")
 
         # Persist work_dir immediately so the web UI Files panel works during execution
         try:
@@ -294,6 +304,7 @@ class WorkflowExecutor:
                 ne.output = json.dumps(output, ensure_ascii=False)
                 ne.status = "completed"
                 ne.retry_count = attempt
+                ne.error = None  # clear stale error from prior retry attempts
                 ne.finished_at = utc_now_iso()
                 await self._db.commit()
 
@@ -600,6 +611,8 @@ class WorkflowExecutor:
         log = RunLog(run_id=run_id, level=level, message=message, node_id=node_id)
         self._db.add(log)
         if self._logger:
-            log_fn = getattr(self._logger, level, self._logger.info)
+            # Normalise "warn" → "warning" because logging.Logger.warn is deprecated
+            logger_level = "warning" if level == "warn" else level
+            log_fn = getattr(self._logger, logger_level, self._logger.info)
             prefix = f"[{node_id}] " if node_id else ""
             log_fn(f"{prefix}{message}")

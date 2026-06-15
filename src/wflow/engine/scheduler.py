@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 from apscheduler.jobstores.base import JobLookupError
@@ -89,14 +90,14 @@ class WorkflowScheduler:
         self._scheduler = AsyncIOScheduler()
         self._session_factory = session_factory
         self._handlers: dict[str, Any] = {}
-        self._project_dirs: list = []
+        self._wflow_dir: Path | None = None
 
     def set_adapters(
-        self, handlers: dict[str, Any], project_dirs: list | None = None
+        self, handlers: dict[str, Any], wflow_dir: Path | None = None
     ) -> None:
         """Set the node handlers for launching workflow executions."""
         self._handlers = handlers
-        self._project_dirs = project_dirs or []
+        self._wflow_dir = wflow_dir
 
     def start(self) -> None:
         self._scheduler.start()
@@ -168,7 +169,7 @@ class WorkflowScheduler:
                 cron_job_id=cron_job_id or None,
                 handlers=self._handlers,
                 session_factory=self._session_factory,
-                project_dirs=self._project_dirs,
+                wflow_dir=self._wflow_dir,
             )
 
     async def restore_jobs(self, db_session_factory) -> None:

@@ -71,6 +71,19 @@ async def test_create_and_get_run(client):
     assert detail.status_code == 200
     assert detail.json()["id"] == run_id
 
+    # Wait for the background run executor to finish so it doesn't race
+    # with engine.dispose() during fixture teardown.
+    import asyncio
+    for _ in range(50):  # 5-second timeout
+        check = await client.get(f"/api/v1/runs/{run_id}")
+        status = check.json()["status"]
+        if status in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        # If still running, at least give it a moment before teardown
+        await asyncio.sleep(0.5)
+
 
 @pytest.mark.asyncio
 async def test_create_and_toggle_cron(client):

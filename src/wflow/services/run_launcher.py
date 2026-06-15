@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -27,7 +28,7 @@ async def start_and_launch(
     inputs: dict[str, Any],
     handlers: dict[str, Any],
     session_factory: Any,
-    project_dirs: list | None = None,
+    wflow_dir: Path | None = None,
     cron_job_id: str | None = None,
     resume_nodes: dict[str, Any] | None = None,
 ) -> WorkflowRun:
@@ -65,7 +66,7 @@ async def start_and_launch(
         inputs=inputs,
         handlers=handlers,
         session_factory=session_factory,
-        project_dirs=project_dirs or [],
+        wflow_dir=wflow_dir,
         resume_nodes=resume_nodes,
     )
     return run
@@ -79,7 +80,7 @@ def launch_workflow(
     inputs: dict[str, Any],
     handlers: dict[str, Any],
     session_factory: Any,
-    project_dirs: list | None = None,
+    wflow_dir: Path | None = None,
     resume_nodes: dict[str, Any] | None = None,
 ) -> None:
     """Launch a workflow execution as a background asyncio task.
@@ -121,7 +122,7 @@ def launch_workflow(
             context=context,
             handlers=handlers,
             session_factory=session_factory,
-            project_dirs=project_dirs or [],
+            wflow_dir=wflow_dir,
             run_logger=run_logger,
         )
     )
@@ -135,7 +136,7 @@ async def _execute_background(
     context: dict[str, Any],
     handlers: dict[str, Any],
     session_factory: Any,
-    project_dirs: list,
+    wflow_dir: Path | None,
     run_logger: Any,
 ) -> None:
     """Background task: restore persisted context, run executor, persist result."""
@@ -153,7 +154,7 @@ async def _execute_background(
                 node_runner=node_runner,
                 session_manager=session_mgr,
                 logger=run_logger,
-                project_dirs=project_dirs,
+                wflow_dir=wflow_dir,
             )
 
             success = await executor.execute(spec, run_id, context, workflow_name=workflow_name)

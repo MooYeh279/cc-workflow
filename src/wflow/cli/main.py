@@ -38,7 +38,7 @@ def server():
 @click.option("--host", default="localhost", help="Bind address")
 @click.option("--port", default=8100, type=int, help="Bind port")
 @click.option("--db", default="./data/workflows.db", help="SQLite database path")
-@click.option("--project-dir", default=None, help="Project root for .claude/.opencode/.wflow detection")
+@click.option("--project-dir", default=None, help="Project root for .wflow directory detection")
 def server_start(host, port, db, project_dir):
     """Start the WFlow server."""
     import uvicorn
@@ -57,6 +57,11 @@ def server_start(host, port, db, project_dir):
 def workflow():
     """Workflow management commands."""
     pass
+
+
+# Import and register the generate command (lives in its own module).
+from wflow.cli.generate import generate
+cli.add_command(generate)
 
 
 @workflow.command("list")

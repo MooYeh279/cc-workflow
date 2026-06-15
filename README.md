@@ -17,6 +17,9 @@ wflow --help
 ## 快速开始
 
 ```bash
+# 0. 从描述生成工作流 JSON（可选）
+wflow generate "代码审查工作流：先写代码，再审查，不通过则修改"
+
 # 1. 启动服务
 wflow server start --port 8100
 
@@ -202,6 +205,33 @@ No valid JSON found — 请修正后重新输出
 
 ## CLI 命令参考
 
+### 工作流生成
+
+通过自然语言描述自动生成工作流 JSON，支持 Claude Code 或 OpenCode 后端。
+
+```bash
+# 基础用法
+wflow generate "代码审查工作流：先写代码，再审查，不通过则修改"
+
+# 指定后端和模型
+wflow generate "多源研究合并：并行分析后汇集" --backend opencode -m deepseek-v4-pro
+
+# 指定输出路径 / 预览
+wflow generate "自动化测试流水线" -o ci-test.json
+wflow generate "需求分析 → 设计 → 审核" --dry-run
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-b, --backend` | 后端：`claude`（默认）/ `opencode` |
+| `-m, --model` | 模型名称 |
+| `-o, --output` | 输出路径（默认 `<name>.json`） |
+| `-t, --timeout` | 超时秒数（默认 600） |
+| `--dry-run` | 仅打印 JSON，不写文件 |
+| `-f, --force` | 覆盖已有文件 |
+
+生成的工作流可直接部署：`wflow workflow create <生成的.json>`
+
 ### 服务管理
 
 ```bash
@@ -253,25 +283,44 @@ wflow cron remove <cron-id>
 
 ## Skills 与脚本
 
-wflow 启动时自动检测项目根目录下的 `.claude`、`.opencode`、`.wflow` 目录，并在每次 run 的工作目录中创建**拷贝或符号链接**：
+wflow 服务启动时自动检测项目根目录下的 **`.wflow`** 目录。每次创建 run 工作目录时，会通过**符号链接**将 skills、agents 和脚本注入到工作目录中：
 
 ```
 项目根目录/
+└── .wflow/                  ← 唯一的配置源目录
+    ├── skills/              # Claude / OpenCode 共用的 skills
+    │   ├── code-review.md
+    │   └── deploy.md
+    ├── agents/              # Claude / OpenCode 共用的 agents
+    │   └── security-scanner.md
+    └── validate.py          # Script 节点引用的脚本
+
+run 工作目录 (workspace/<run-id>-<uuid>)
 ├── .claude/
-│   ├── settings.json      # Claude Code 配置
-│   ├── CLAUDE.md          # 项目级别指令（Claude 自动读取）
-│   └── skills/            # 自定义 skills
+│   ├── skills/  → ../../.wflow/skills/    (符号链接)
+│   └── agents/  → ../../.wflow/agents/    (符号链接)
 ├── .opencode/
-│   └── opencode.json      # OpenCode 配置
-└── .wflow/
-    └── validate.py        # 自定义脚本 / 工具
+│   ├── skills/  → ../../.wflow/skills/    (符号链接)
+│   └── agents/  → ../../.wflow/agents/    (符号链接)
+└── .wflow/  → ../.wflow/                  (符号链接)
 ```
 
 ### 工作原理
 
-1. 服务启动时通过 `WFLOW_PROJECT_DIR` 环境变量（默认当前目录）检测上述目录
-2. 每次创建 run 工作目录时，将检测到的目录**复制或符号链接**进去
-3. 工作目录内的 Claude/OpenCode 节点可直接使用项目 skills、配置和脚本
+1. 服务启动时通过 `WFLOW_PROJECT_DIR` 环境变量（默认当前目录）检测 `.wflow` 目录
+2. 每次创建 run 工作目录时，自动创建 `.claude/` 和 `.opencode/` 子目录
+3. 将 `.wflow/skills/` 和 `.wflow/agents/` 以**符号链接**方式注入到 `.claude/` 和 `.opencode/` 中
+4. 整个 `.wflow/` 目录也作为符号链接放入工作目录
+5. 使用**纯符号链接**，不复制文件 — 修改源文件后重跑 run 即可生效
+
+### 异常处理
+
+| 场景 | 行为 |
+|------|------|
+| `.wflow` 不存在 | 服务正常启动，run 无 skills/agents（不影响执行） |
+| `.wflow` 存在但无 `skills/` `agents/` | 跳过对应链接，warning 日志提示 |
+| symlink 失败（权限不足等） | warning 日志，run 继续执行 |
+| 断点续跑（目标已存在） | 跳过，不覆盖已有链接 |
 
 ### 配置方式
 
@@ -291,11 +340,10 @@ WFLOW_PROJECT_DIR=/path/to/project wflow server start
 
 | 场景 | 配置方式 |
 |------|---------|
-| Claude 节点触发 skill | 项目根目录下放置 `.claude/skills/` 或 `.claude/CLAUDE.md` |
-| OpenCode 节点使用配置 | 项目根目录下放置 `.opencode/opencode.json` |
-| Script 节点引用脚本 | `"command": "python .wflow/validate.py"`（脚本放在 `.wflow/` 下）|
-
-> **注意：** 拷贝发生在 run 创建时。如果更新了 skill 或配置，需要**重新启动 run** 才会生效。
+| Claude/OpenCode 共用 skill | 放入 `.wflow/skills/`，所有节点类型的 `skills/` 链接到同一个源 |
+| Claude/OpenCode 共用 agent | 放入 `.wflow/agents/`，同上 |
+| Script 节点引用脚本 | `"command": "python .wflow/validate.py"` |
+| 项目级说明/配置 | 在 project root 放 `.claude/` 或 `.opencode/` 需单独维护，wflow 不再自动检测 |
 
 ---
 
@@ -413,7 +461,7 @@ wflow server start
 | **Session 复用** | 每个 (run_id, node_id) 一个固定 session。回路重入同一节点时自动 Resume |
 | **回路检测** | 基于无条件边构建 ancestor 关系，条件边仅当 target 是 source 的祖先时才触发 staleness |
 | **流式日志** | Claude/OpenCode 使用 `stream-json` 输出，实时记录工具调用和状态 |
-| **工作目录隔离** | 每个 run 创建 `workspace/<run_id[:8]>-<uuid>` 独立目录，自动拷贝项目的 `.claude`/`.opencode`/`.wflow` 配置 |
+| **工作目录隔离** | 每个 run 创建 `workspace/<run_id[:8]>-<uuid>` 独立目录，自动符号链接 `.wflow/skills` / `.wflow/agents` 到 `.claude` 和 `.opencode` 中 |
 | **条件分支** | Edge `condition` 支持 `==`/`!=` 比较，模板变量引用上游输出 |
 | **断点续跑** | 任务状态和 work_dir 持久化到 DB，支持重跑和恢复 |
 | **人工审核透传** | `human_review` approved 时将上游节点真实产出传递到下游 |
@@ -425,8 +473,10 @@ src/wflow/
 ├── main.py            # FastAPI 应用工厂 + scheduler 生命周期
 ├── api/               # REST API (status, workflows, runs, cron)
 ├── cli/               # Click CLI
+│   ├── main.py            # 命令入口 (server, workflow, run, cron, generate)
+│   └── generate.py        # 工作流 JSON 生成 (自然语言 → 工作流 JSON)
 ├── engine/            # 核心引擎
-│   ├── executor.py        # DAG 拓扑遍历 + 回路检测
+│   ├── executor.py        # DAG 拓扑遍历 + 回路检测 + 重试
 │   ├── node_handler.py    # NodeHandler ABC + 4 个处理器
 │   ├── node_runner.py     # 处理器派发
 │   ├── scheduler.py       # Cron 调度
@@ -434,6 +484,7 @@ src/wflow/
 │   ├── state_machine.py   # 状态机
 │   └── template.py        # {{ }} 模板解析
 ├── adapters/          # 外部适配器 (claude_cli, opencode_cli, script_runner)
+├── common/            # 共享工具 (json_parser, time_utils, workspace)
 ├── models/            # Pydantic + SQLAlchemy 模型
 ├── services/          # 业务逻辑层
 └── web/               # Alpine.js SPA
@@ -446,14 +497,44 @@ src/wflow/
 | `WFLOW_DB_URL` | `sqlite+aiosqlite:///./data/workflows.db` | 数据库路径 |
 | `WFLOW_RUNS_DIR` | `./workspace` | 工作目录根路径 |
 | `WFLOW_SERVER_URL` | `http://localhost:8100` | CLI 连接地址 |
-| `WFLOW_PROJECT_DIR` | 当前目录 | 项目根目录(.claude/.opencode/.wflow 检测) |
+| `WFLOW_PROJECT_DIR` | 当前目录 | 项目根目录(.wflow 检测) |
 
 ---
 
 ## 运行测试
 
 ```bash
-pytest tests/ -v
-pytest tests/test_engine/ -v
-pytest tests/test_adapters/ -v
+# 默认：运行全部单元/集成/API 测试（117 个）
+pytest
+
+# 单独运行 E2E 测试（需要 Playwright 浏览器）
+pytest -m e2e
+
+# 两者互斥运行 —— pytest-playwright 与 pytest-asyncio
+# 管理事件循环的方式不兼容，混跑会导致 async 测试全部失败。
+# tests/conftest.py 中的 pytest_collection_modifyitems hook
+# 确保它们不会同时执行。
 ```
+
+### 测试组织
+
+| 目录 | 类型 | 数量 |
+|------|------|------|
+| `tests/test_adapters/` | 适配器单元测试 | 22 |
+| `tests/test_engine/` | 引擎单元测试 | 52 |
+| `tests/test_api/` | API 集成测试 | 5 |
+| `tests/test_models/` | ORM 模型测试 | 10 |
+| `tests/test_services/` | 服务层单元测试 | 5 |
+| `tests/test_cli/` | CLI 命令测试 | 5 |
+| `tests/e2e/` | E2E 测试 (Playwright) | 11 |
+
+### E2E 测试要求
+
+```bash
+playwright install chromium
+pytest -m e2e
+```
+
+- `tests/e2e/conftest.py` 自动启动 FastAPI 测试服务器 (port 18100)
+- 每个测试模块启动独立服务器，测试结束后自动清理
+- 工作流名使用 UUID 后缀，避免跨测试数据冲突

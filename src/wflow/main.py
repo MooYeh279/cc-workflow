@@ -72,19 +72,19 @@ def create_app(
         }
         logger.info("Adapters initialized: ClaudeCLI, OpenCodeCLI, ScriptRunner")
 
-        # Detect project config directories
-        from wflow.common.workspace import detect_project_dirs
+        # Detect project config directory
+        from wflow.common.workspace import detect_wflow_dir
         project_dir = os.environ.get("WFLOW_PROJECT_DIR", os.getcwd())
-        project_dirs = detect_project_dirs(project_dir)
-        if project_dirs:
-            logger.info(f"Project dirs detected: {[d.name for d in project_dirs]}")
+        wflow_dir = detect_wflow_dir(project_dir)
+        if wflow_dir:
+            logger.info(f"Project .wflow directory detected: {wflow_dir}")
         else:
-            logger.info("No project dirs (.claude/.opencode/.wflow) detected")
+            logger.info("No .wflow directory detected")
 
         # Wire up cron scheduler
         from wflow.engine.scheduler import WorkflowScheduler
         scheduler = WorkflowScheduler(SessionLocal)
-        scheduler.set_adapters(handlers, project_dirs)
+        scheduler.set_adapters(handlers, wflow_dir)
         scheduler.start()
         await scheduler.restore_jobs(SessionLocal)
         logger.info("Cron scheduler started — restored enabled jobs")
@@ -92,7 +92,7 @@ def create_app(
         app.state.engine = engine
         app.state.SessionLocal = SessionLocal
         app.state.handlers = handlers
-        app.state.project_dirs = project_dirs
+        app.state.wflow_dir = wflow_dir
         app.state.scheduler = scheduler
 
         yield

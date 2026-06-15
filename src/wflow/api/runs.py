@@ -280,19 +280,28 @@ async def list_workdir_files(
     if wd is None:
         return {"work_dir": "", "path": ".", "entries": []}
 
-    target = (wd / path).resolve() if path else wd
+    # Security: traverse-check the UNRESOLVED path (before symlinks are
+    # followed) so that symlinked directories (e.g .wflow, skills, agents)
+    # are accessible without triggering path-traversal denial.
+    target_unresolved = (wd / path) if path else wd
     try:
-        target.relative_to(wd)
+        target_unresolved.relative_to(wd)
     except ValueError:
         raise HTTPException(status_code=403, detail="Path traversal denied")
 
+    # Now resolve symlinks for filesystem operations.
+    target = target_unresolved.resolve()
     if not target.exists() or not target.is_dir():
         return {"work_dir": str(wd), "path": path or ".", "entries": []}
 
     entries = []
     try:
         for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-            rel = str(entry.relative_to(wd)).replace("\\", "/")
+            # Build relative path from the unresolved location so that
+            # entries inside symlinked directories (e.g. .wflow/skills)
+            # still compute correctly via relative_to(wd).
+            entry_unresolved = target_unresolved / entry.name
+            rel = str(entry_unresolved.relative_to(wd)).replace("\\", "/")
             entries.append({
                 "name": entry.name,
                 "path": rel,
@@ -316,12 +325,13 @@ async def read_workdir_file(
     if wd is None:
         raise HTTPException(status_code=404, detail="Work directory not available")
 
-    target = (wd / path).resolve()
+    target_unresolved = wd / path
     try:
-        target.relative_to(wd)
+        target_unresolved.relative_to(wd)
     except ValueError:
         raise HTTPException(status_code=403, detail="Path traversal denied")
 
+    target = target_unresolved.resolve()
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
     if not target.is_file():
