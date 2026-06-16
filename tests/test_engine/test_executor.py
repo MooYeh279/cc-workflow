@@ -1,11 +1,22 @@
+import asyncio
+import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from wflow.engine.executor import WorkflowExecutor, _evaluate_condition
 from wflow.engine.template import TemplateContext
 
 
 def make_context() -> TemplateContext:
     return {"inputs": {}, "nodes": {}, "run": {"id": "run-1"}, "config": {"max_retries": 2}}
+
+
+def make_mock_session_factory():
+    """Return a session_factory mock that yields an AsyncMock session."""
+    mock_db = AsyncMock()
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_cm.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=mock_cm)
 
 
 def test_evaluate_condition_none_returns_true():
@@ -71,7 +82,7 @@ async def test_executor_runs_nodes_in_order():
     session_mgr.set_provider_session_id = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="test-wf")
     assert result is True
@@ -116,7 +127,7 @@ async def test_executor_evaluates_conditions():
     session_mgr.set_provider_session_id = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="conditional")
     assert result is True
@@ -156,7 +167,7 @@ async def test_executor_handles_retry_and_failure():
     session_mgr.set_provider_session_id = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="retry-test")
     assert result is True
@@ -172,7 +183,7 @@ def test_get_upstream_output_first_node_returns_none():
                 "output": {"type": "object", "properties": {}, "required": []}}],
         edges=[],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
 
     result = executor._get_upstream_output(spec, "start", make_context())
     assert result is None
@@ -192,7 +203,7 @@ def test_get_upstream_output_returns_predecessor_output():
         ],
         edges=[{"id": "e1", "from": "a", "to": "b"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"]["a"] = {"output": {"x": 1}, "status": "completed"}
 
@@ -214,7 +225,7 @@ def test_get_upstream_output_skips_failed_predecessor():
         ],
         edges=[{"id": "e1", "from": "a", "to": "b"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"]["a"] = {"output": {}, "status": "failed"}
 
@@ -262,7 +273,7 @@ async def test_executor_diamond_dag():
     session_mgr.mark_completed = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="diamond")
     assert result is True
@@ -285,7 +296,7 @@ def test_all_predecessors_done_start_node():
         ],
         edges=[],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     assert executor._all_predecessors_done(spec, "start", make_context(), {"start"}) is True
 
 
@@ -303,7 +314,7 @@ def test_all_predecessors_done_merge_all_completed():
         ],
         edges=[{"id": "e1", "from": "a", "to": "d"}, {"id": "e2", "from": "b", "to": "d"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"]["a"] = {"output": {}, "status": "completed"}
     ctx["nodes"]["b"] = {"output": {}, "status": "completed"}
@@ -325,7 +336,7 @@ def test_all_predecessors_done_merge_partial():
         ],
         edges=[{"id": "e1", "from": "a", "to": "d"}, {"id": "e2", "from": "b", "to": "d"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"]["a"] = {"output": {}, "status": "completed"}
     # a completed, b reached but NOT completed → d should wait
@@ -347,7 +358,7 @@ def test_all_predecessors_done_loopback():
         ],
         edges=[{"id": "e1", "from": "review", "to": "coding"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"]["coding"] = {"output": {"files": ["a.py"]}, "status": "completed"}
     ctx["nodes"]["review"] = {"output": {"approved": False}, "status": "completed"}
@@ -369,7 +380,7 @@ def test_all_predecessors_done_loopback_no_predecessor():
         ],
         edges=[{"id": "e1", "from": "review", "to": "coding"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"]["coding"] = {"output": {"files": ["a.py"]}, "status": "completed"}
     # review not completed yet → loop-back should wait
@@ -391,7 +402,7 @@ def test_all_predecessors_done_start_with_loop_edge():
         ],
         edges=[{"id": "e1", "from": "review", "to": "coding"}],
     )
-    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=AsyncMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     # coding is start — review (its predecessor) hasn't been reached yet
     assert executor._all_predecessors_done(spec, "coding", ctx, {"coding"}) is True
@@ -443,7 +454,7 @@ async def test_executor_loopback_cycle():
     session_mgr.set_provider_session_id = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="loopback")
     assert result is True
@@ -495,7 +506,7 @@ async def test_executor_multiple_start_nodes():
     session_mgr.mark_completed = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="multi")
     assert result is True
@@ -539,7 +550,7 @@ async def test_executor_retry_with_error_feedback():
     session_mgr.set_provider_session_id = AsyncMock()
 
     db_session = AsyncMock()
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     result = await executor.execute(spec, "run-1", make_context(), workflow_name="rf")
     assert result is True
@@ -577,7 +588,7 @@ def test_compute_stale_nodes_rejected_review():
         ],
     )
 
-    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"] = {
         "coding": {"output": {"plan": "x"}, "status": "completed"},
@@ -613,7 +624,7 @@ def test_compute_stale_nodes_approved_review():
         ],
     )
 
-    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"] = {
         "coding": {"output": {"plan": "x"}, "status": "completed"},
@@ -641,7 +652,7 @@ def test_compute_stale_nodes_no_conditions():
         edges=[{"id": "e1", "from": "a", "to": "b"}],
     )
 
-    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"] = {
         "a": {"output": {"x": 1}, "status": "completed"},
@@ -679,7 +690,7 @@ def test_compute_stale_nodes_complex_cycle():
         ],
     )
 
-    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock())
+    executor = WorkflowExecutor(db=MagicMock(), node_runner=MagicMock(), session_manager=MagicMock(), session_factory=MagicMock())
     ctx = make_context()
     ctx["nodes"] = {
         "a": {"output": {"x": 1}, "status": "completed"},
@@ -758,7 +769,7 @@ async def test_executor_human_review_rejected_loopback():
     db_session.commit = AsyncMock()
     db_session.add = MagicMock()
 
-    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr)
+    executor = WorkflowExecutor(db=db_session, node_runner=node_runner, session_manager=session_mgr, session_factory=make_mock_session_factory())
 
     # First execution: coding→review (pauses for review)
     ctx = make_context()
@@ -804,3 +815,251 @@ async def test_executor_human_review_rejected_loopback():
     assert result3 is True  # workflow completes
     # No new calls — both nodes are non-stale previously_completed → skipped
     assert node_runner.run.call_count == 4
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Concurrent execution
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_executor_concurrent_diamond_dag():
+    """Diamond DAG A→B→D, A→C→D — verify B and C execute concurrently.
+
+    Uses ``asyncio.sleep`` yield points inside ``node_runner.run`` so the
+    event loop interleaves B and C within the same ``asyncio.gather`` batch.
+    A ``max_in_flight`` counter proves both were active at the same moment.
+    """
+    from wflow.models.workflow import WorkflowSpec
+
+    spec = WorkflowSpec(
+        name="diamond",
+        nodes=[
+            {"id": "a", "type": "script", "command": "echo a",
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "b", "type": "script", "command": "echo b",
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "c", "type": "script", "command": "echo c",
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "d", "type": "script", "command": "echo d",
+             "output": {"type": "object", "properties": {}, "required": []}},
+        ],
+        edges=[
+            {"id": "e1", "from": "a", "to": "b"},
+            {"id": "e2", "from": "a", "to": "c"},
+            {"id": "e3", "from": "b", "to": "d"},
+            {"id": "e4", "from": "c", "to": "d"},
+        ],
+    )
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracked_run(node_config, context, **kwargs):
+        nonlocal in_flight, max_in_flight
+        nid = node_config["id"]
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        # Yield to the event loop so other coroutines in the same gather()
+        # batch get a chance to run — without this, cooperative asyncio
+        # would run each coroutine to completion before switching.
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return {"echo": nid, "_session_id": f"s-{nid}"}
+
+    node_runner = MagicMock()
+    node_runner.run = AsyncMock(side_effect=tracked_run)
+
+    # SessionManager is instantiated per-node in the concurrent path —
+    # patch the class so every instance is a fresh mock.
+    with patch("wflow.engine.executor.SessionManager") as MockSM:
+        def _make_sm(_db):
+            sm = MagicMock()
+            sm.get_provider_session_id = AsyncMock(return_value=None)
+            sm.get_or_create = AsyncMock(return_value="s-x")
+            sm.mark_completed = AsyncMock()
+            sm.set_provider_session_id = AsyncMock()
+            return sm
+        MockSM.side_effect = _make_sm
+
+        main_sm = MagicMock()
+        main_sm.get_provider_session_id = AsyncMock(return_value=None)
+        main_sm.get_or_create = AsyncMock(return_value="s-main")
+        main_sm.mark_completed = AsyncMock()
+        main_sm.set_provider_session_id = AsyncMock()
+
+        db_session = AsyncMock()
+        executor = WorkflowExecutor(
+            db=db_session,
+            node_runner=node_runner,
+            session_manager=main_sm,
+            session_factory=make_mock_session_factory(),
+        )
+
+        ctx = make_context()
+        result = await executor.execute(spec, "run-1", ctx, workflow_name="diamond")
+
+    assert result is True
+    assert node_runner.run.call_count == 4
+    assert max_in_flight >= 2, (
+        f"Expected B and C to execute concurrently, "
+        f"but max_in_flight={max_in_flight}"
+    )
+    # Verify D received both upstream outputs
+    d_call = node_runner.run.call_args_list[3].kwargs
+    up = d_call["upstream_output"]
+    assert "b" in up
+    assert "c" in up
+
+
+@pytest.mark.asyncio
+async def test_executor_serial_with_max_concurrency_1(monkeypatch):
+    """WFLOW_MAX_CONCURRENCY=1 forces serial execution even with factory."""
+    monkeypatch.setenv("WFLOW_MAX_CONCURRENCY", "1")
+    # Force _resolve_max_concurrency to re-read (it reads at call time)
+    from wflow.models.workflow import WorkflowSpec
+
+    spec = WorkflowSpec(
+        name="diamond",
+        nodes=[
+            {"id": "a", "type": "script", "command": "echo a",
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "b", "type": "script", "command": "echo b",
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "c", "type": "script", "command": "echo c",
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "d", "type": "script", "command": "echo d",
+             "output": {"type": "object", "properties": {}, "required": []}},
+        ],
+        edges=[
+            {"id": "e1", "from": "a", "to": "b"},
+            {"id": "e2", "from": "a", "to": "c"},
+            {"id": "e3", "from": "b", "to": "d"},
+            {"id": "e4", "from": "c", "to": "d"},
+        ],
+    )
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracked_run(node_config, context, **kwargs):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return {"echo": node_config["id"], "_session_id": f"s-{node_config['id']}"}
+
+    node_runner = MagicMock()
+    node_runner.run = AsyncMock(side_effect=tracked_run)
+
+    session_mgr = MagicMock()
+    session_mgr.get_provider_session_id = AsyncMock(return_value=None)
+    session_mgr.get_or_create = AsyncMock(side_effect=["s-a", "s-b", "s-c", "s-d"])
+    session_mgr.mark_completed = AsyncMock()
+    session_mgr.set_provider_session_id = AsyncMock()
+
+    db_session = AsyncMock()
+    executor = WorkflowExecutor(
+        db=db_session, node_runner=node_runner, session_manager=session_mgr,
+        session_factory=make_mock_session_factory(),
+    )
+
+    result = await executor.execute(spec, "run-1", make_context(), workflow_name="diamond")
+    assert result is True
+    assert node_runner.run.call_count == 4
+    # With semaphore(1), execution is effectively serial → max_in_flight == 1
+    assert max_in_flight == 1, (
+        f"Expected serial execution with MAX_CONCURRENCY=1, "
+        f"but max_in_flight={max_in_flight}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_executor_concurrent_claude_nodes():
+    """Diamond DAG with claude-type nodes — exercises concurrent session resolution.
+
+    Unlike ``script`` nodes (which skip ``_resolve_session`` entirely),
+    ``claude``/``opencode`` nodes call ``SessionManager.get_provider_session_id``
+    and ``SessionManager.get_or_create``.  This test verifies those calls
+    happen correctly when two session-based nodes run in the same batch.
+    """
+    from wflow.models.workflow import WorkflowSpec
+
+    spec = WorkflowSpec(
+        name="diamond-claude",
+        nodes=[
+            {"id": "a", "type": "claude", "prompt": "start",
+             "tools": {"allowed": [], "disallowed": []},
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "b", "type": "claude", "prompt": "branch-b",
+             "tools": {"allowed": [], "disallowed": []},
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "c", "type": "claude", "prompt": "branch-c",
+             "tools": {"allowed": [], "disallowed": []},
+             "output": {"type": "object", "properties": {}, "required": []}},
+            {"id": "d", "type": "script", "command": "echo merge",
+             "output": {"type": "object", "properties": {}, "required": []}},
+        ],
+        edges=[
+            {"id": "e1", "from": "a", "to": "b"},
+            {"id": "e2", "from": "a", "to": "c"},
+            {"id": "e3", "from": "b", "to": "d"},
+            {"id": "e4", "from": "c", "to": "d"},
+        ],
+    )
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracked_run(node_config, context, **kwargs):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return {"echo": node_config["id"], "_session_id": f"s-{node_config['id']}"}
+
+    node_runner = MagicMock()
+    node_runner.run = AsyncMock(side_effect=tracked_run)
+
+    # Patch SessionManager for the per-node instances created in
+    # _execute_batch_concurrent.
+    with patch("wflow.engine.executor.SessionManager") as MockSM:
+        def _make_sm(_db):
+            sm = MagicMock()
+            sm.get_provider_session_id = AsyncMock(return_value=None)
+            sm.get_or_create = AsyncMock(return_value="s-x")
+            sm.mark_completed = AsyncMock()
+            sm.set_provider_session_id = AsyncMock()
+            return sm
+        MockSM.side_effect = _make_sm
+
+        main_sm = MagicMock()
+        main_sm.get_provider_session_id = AsyncMock(return_value=None)
+        main_sm.get_or_create = AsyncMock(return_value="s-main")
+        main_sm.mark_completed = AsyncMock()
+        main_sm.set_provider_session_id = AsyncMock()
+
+        db_session = AsyncMock()
+        executor = WorkflowExecutor(
+            db=db_session,
+            node_runner=node_runner,
+            session_manager=main_sm,
+            session_factory=make_mock_session_factory(),
+        )
+
+        ctx = make_context()
+        result = await executor.execute(spec, "run-1", ctx, workflow_name="diamond-c")
+
+    assert result is True
+    assert node_runner.run.call_count == 4
+    assert max_in_flight >= 2, (
+        f"Expected claude B and C to execute concurrently, "
+        f"but max_in_flight={max_in_flight}"
+    )
+    # Verify D received both upstream outputs
+    d_call = node_runner.run.call_args_list[3].kwargs
+    up = d_call["upstream_output"]
+    assert "b" in up
+    assert "c" in up

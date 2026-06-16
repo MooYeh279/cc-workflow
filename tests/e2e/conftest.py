@@ -54,7 +54,7 @@ def server_url():
                 f"stderr: {stderr_text[:3000]}"
             )
         try:
-            resp = httpx.get(f"{url}/api/v1/status", timeout=2)
+            resp = httpx.get(f"{url}/api/v1/status", timeout=2, trust_env=False)
             if resp.status_code == 200:
                 break
         except Exception as e:
@@ -77,7 +77,7 @@ def server_url():
 @pytest.fixture(scope="session")
 def api_client(server_url):
     """httpx client for direct API setup (bypasses browser)."""
-    return httpx.Client(base_url=server_url)
+    return httpx.Client(base_url=server_url, trust_env=False)
 
 
 def navigate_to(page, tab_name: str):

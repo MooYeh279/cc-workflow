@@ -29,6 +29,20 @@ _RUNS_DIR = os.environ.get("WFLOW_RUNS_DIR", "./workspace")
 _MAX_ITERATIONS = 1000
 
 
+def _resolve_max_concurrency() -> int:
+    """Max concurrent nodes from ``WFLOW_MAX_CONCURRENCY`` env var.
+
+    ``0``   — unlimited
+    ``1``   — serial execution
+    ``N``   — at most N nodes at a time (default: 4)
+    """
+    raw = os.environ.get("WFLOW_MAX_CONCURRENCY", "4").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 4
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Module-level helpers
 # ══════════════════════════════════════════════════════════════════════════════
@@ -81,7 +95,13 @@ def _evaluate_condition(condition: str | None, context: TemplateContext) -> bool
 
 
 class WorkflowExecutor:
-    """Drives execution of a workflow run through its DAG, one node at a time."""
+    """Drives execution of a workflow run through its DAG.
+
+    Nodes whose predecessors have all completed are executed concurrently
+    via :func:`asyncio.gather`, each with its own database session from
+    *session_factory*.  Concurrency is capped by the ``WFLOW_MAX_CONCURRENCY``
+    environment variable (0 = unlimited, the default; 1 = serial).
+    """
 
     _SESSION_TYPES: frozenset[str] = frozenset({"claude", "opencode"})
 
@@ -90,15 +110,18 @@ class WorkflowExecutor:
         db: AsyncSession,
         node_runner: NodeRunner,
         session_manager: SessionManager,
+        session_factory: Any,
         logger: logging.Logger | None = None,
         wflow_dir: Path | None = None,
     ):
         self._db = db
         self._node_runner = node_runner
         self._session_mgr = session_manager
+        self._session_factory = session_factory
         self._logger = logger
         self._wflow_dir = wflow_dir
         self._state_machine = RunStateMachine()
+        self._concurrency_sem: asyncio.Semaphore | None = None
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -132,52 +155,93 @@ class WorkflowExecutor:
             self._log(run_id, None, "info",
                       f"Previously completed (will skip): {sorted(previously_completed)}")
 
-        # --- Queue-based DAG traversal ---
+        # --- Queue-based DAG traversal with concurrent batches ---
         ready: list[str] = list(start_ids)
         reached: set[str] = set(start_ids)
         iteration = 0
 
         while ready and iteration < _MAX_ITERATIONS:
             iteration += 1
-            current_node_id = ready.pop(0)
 
-            if not self._all_predecessors_done(spec, current_node_id, context, reached):
-                ready.append(current_node_id)
+            # Partition ready nodes into those whose predecessors are
+            # all done (executable now) and those that must wait.
+            executable_ids: list[str] = []
+            still_waiting: list[str] = []
+            for nid in ready:
+                if self._all_predecessors_done(spec, nid, context, reached):
+                    executable_ids.append(nid)
+                else:
+                    still_waiting.append(nid)
+
+            if not executable_ids:
+                if still_waiting:
+                    self._log(run_id, None, "error",
+                              "Deadlock: nodes waiting for unreachable predecessors")
+                break
+
+            ready = still_waiting
+
+            # --- Filter out skippable nodes ---
+            batch: list[tuple[str, dict[str, Any]]] = []
+            for nid in executable_ids:
+                node_config = spec.get_node(nid)
+                existing_state = context.get("nodes", {}).get(nid)
+
+                # Skip nodes awaiting review
+                if existing_state and existing_state.get("status") == "awaiting_review":
+                    self._log(run_id, nid, "info",
+                              f"Skipping node (still awaiting review): {nid}")
+                    continue
+
+                # Skip previously-completed nodes (non-stale)
+                if nid in previously_completed:
+                    self._log(run_id, nid, "info",
+                              f"Skipping node (already completed): {nid}")
+                    self._enqueue_successors(spec, nid, context, ready, reached)
+                    continue
+
+                batch.append((nid, node_config))
+
+            if not batch:
                 continue
 
-            node_config = spec.get_node(current_node_id)
-            existing_state = context.get("nodes", {}).get(current_node_id)
+            # --- Execute batch (concurrent when >1) ---
+            if len(batch) > 1:
+                results = await self._execute_batch_concurrent(
+                    spec, run_id, batch, context, work_dir,
+                )
+            else:
+                nid, node_config = batch[0]
+                self._log(run_id, nid, "info",
+                          f"Executing node: {nid} ({node_config['type']})")
+                success = await self._execute_node(
+                    spec, run_id, nid, node_config, context, work_dir,
+                )
+                results = [(nid, success)]
 
-            # Skip nodes awaiting review
-            if existing_state and existing_state.get("status") == "awaiting_review":
-                self._log(run_id, current_node_id, "info",
-                          f"Skipping node (still awaiting review): {current_node_id}")
-                continue
+            # --- Process results ---
+            # Two-pass approach: first classify all failures, then
+            # decide the run outcome.  A hard failure takes precedence
+            # over a human_review pause from a sibling in the same
+            # batch (both ran concurrently, so both outcomes matter).
+            any_awaiting_review = False
+            any_hard_failure = False
+            for nid, success in results:
+                if not success:
+                    existing = context.get("nodes", {}).get(nid, {})
+                    if existing.get("status") == "awaiting_review":
+                        any_awaiting_review = True
+                    else:
+                        any_hard_failure = True
 
-            # Skip previously-completed nodes (non-stale)
-            if current_node_id in previously_completed:
-                self._log(run_id, current_node_id, "info",
-                          f"Skipping node (already completed): {current_node_id}")
-                self._enqueue_successors(spec, current_node_id, context, ready, reached)
-                continue
-
-            self._log(run_id, current_node_id, "info",
-                      f"Executing node: {current_node_id} ({node_config['type']})")
-
-            # --- Execute the node ---
-            success = await self._execute_node(
-                spec, run_id, current_node_id, node_config, context, work_dir,
-            )
-
-            if not success:
-                # success=False means either failure or human review pause
-                existing = context.get("nodes", {}).get(current_node_id, {})
-                if existing.get("status") == "awaiting_review":
-                    return False  # graceful pause
+            if any_hard_failure:
                 return False  # hard failure
+            if any_awaiting_review:
+                return False  # graceful pause
 
-            # Enqueue successors
-            self._enqueue_successors(spec, current_node_id, context, ready, reached)
+            # All nodes in the batch succeeded — enqueue successors
+            for nid, _ in results:
+                self._enqueue_successors(spec, nid, context, ready, reached)
 
         if iteration >= _MAX_ITERATIONS:
             self._log(run_id, None, "error",
@@ -242,13 +306,24 @@ class WorkflowExecutor:
         node_config: dict[str, Any],
         context: TemplateContext,
         work_dir: str,
+        db: AsyncSession | None = None,
+        session_mgr: SessionManager | None = None,
     ) -> bool:
         """Execute a single node with all pre/post processing.
 
         Returns True on success, False on failure or human-review pause.
+
+        When *db* and *session_mgr* are provided (concurrent execution),
+        the node uses those for all database operations instead of the
+        executor-wide defaults.
         """
+        _db = db or self._db
+        _session_mgr = session_mgr or self._session_mgr
+
         # --- Session resolution ---
-        session_id, is_resume_session = await self._resolve_session(run_id, node_id, node_config)
+        session_id, is_resume_session = await self._resolve_session(
+            run_id, node_id, node_config, session_mgr=_session_mgr,
+        )
 
         upstream_output = self._get_upstream_output(spec, node_id, context)
         node_input = (
@@ -265,8 +340,8 @@ class WorkflowExecutor:
             status="running",
             input=json.dumps(node_input, ensure_ascii=False),
         )
-        self._db.add(ne)
-        await self._db.commit()
+        _db.add(ne)
+        await _db.commit()
 
         # --- Retry loop ---
         retry_config = node_config.get("retry", {})
@@ -290,7 +365,7 @@ class WorkflowExecutor:
                 # Human review pause
                 if output.pop("_awaiting_review", False):
                     return await self._handle_human_review_pause(
-                        run_id, node_id, output, context, ne,
+                        run_id, node_id, output, context, ne, db=_db,
                     )
 
                 # Success
@@ -306,14 +381,14 @@ class WorkflowExecutor:
                 ne.retry_count = attempt
                 ne.error = None  # clear stale error from prior retry attempts
                 ne.finished_at = utc_now_iso()
-                await self._db.commit()
+                await _db.commit()
 
                 # Persist the provider-assigned session ID for future resumes
                 if session_id_out and node_config["type"] in self._SESSION_TYPES:
-                    await self._session_mgr.set_provider_session_id(
+                    await _session_mgr.set_provider_session_id(
                         run_id, node_id, session_id_out,
                     )
-                    await self._session_mgr.mark_completed(session_id_out)
+                    await _session_mgr.mark_completed(session_id_out)
 
                 return True
 
@@ -321,24 +396,90 @@ class WorkflowExecutor:
                 last_error = str(e)[:500]
                 ne.retry_count = attempt + 1
                 ne.error = str(e)[:1000]
-                await self._db.commit()
+                await _db.commit()
 
                 if attempt >= max_retries:
                     ne.status = "failed"
                     ne.finished_at = utc_now_iso()
-                    await self._db.commit()
+                    await _db.commit()
                     context["nodes"][node_id] = {
                         "output": {}, "status": "failed", "retry_count": attempt,
                     }
                     self._log(run_id, node_id, "error",
-                              f"Node failed after {max_retries} retries: {e}")
+                              f"Node failed after {max_retries} retries: {e}", db=_db)
                     return False
 
                 self._log(run_id, node_id, "warn",
-                          f"Retry {attempt + 1}/{max_retries}: {e}")
+                          f"Retry {attempt + 1}/{max_retries}: {e}", db=_db)
                 await asyncio.sleep(retry_delay)
 
         return False
+
+    # ── Concurrent batch execution ───────────────────────────────────────────
+
+    async def _execute_batch_concurrent(
+        self,
+        spec: WorkflowSpec,
+        run_id: str,
+        batch: list[tuple[str, dict[str, Any]]],
+        context: TemplateContext,
+        work_dir: str,
+    ) -> list[tuple[str, bool]]:
+        """Execute a batch of ready nodes concurrently.
+
+        Each node gets its own database session and session manager so that
+        independent DB writes do not contend on a single session.
+
+        Concurrency is capped by the ``WFLOW_MAX_CONCURRENCY`` environment
+        variable: ``0`` = unlimited, ``1`` = serial, ``N`` = at most N
+        nodes at a time (default: 4).
+        """
+        max_conc = _resolve_max_concurrency()
+
+        async def _run_one(nid: str, node_config: dict[str, Any]) -> tuple[str, bool]:
+            try:
+                async with self._session_factory() as node_db:
+                    node_sm = SessionManager(node_db)
+                    self._log(run_id, nid, "info",
+                              f"Executing node: {nid} ({node_config['type']})",
+                              db=node_db)
+                    success = await self._execute_node(
+                        spec, run_id, nid, node_config, context, work_dir,
+                        db=node_db, session_mgr=node_sm,
+                    )
+                    return nid, success
+            except Exception:
+                # Per-node catch so one task's unexpected failure
+                # (e.g. DB OperationalError) never cancels sibling
+                # tasks via gather's default exception propagation.
+                self._log(run_id, nid, "error",
+                          f"Unexpected exception in node {nid}",
+                          db=self._db)
+                import traceback
+                traceback.print_exc()
+                return nid, False
+
+        async def _run_one_throttled(nid: str, node_config: dict[str, Any]) -> tuple[str, bool]:
+            async with _sem:
+                return await _run_one(nid, node_config)
+
+        # Lazy-init the semaphore once per executor instance.
+        # Re-create if max_conc changed to 0 (unlimited) after a prior batch
+        # had a non-zero limit — otherwise the cached semaphore would keep
+        # throttling even though the user removed the limit.
+        if max_conc <= 0:
+            self._concurrency_sem = None
+        elif self._concurrency_sem is None:
+            self._concurrency_sem = asyncio.Semaphore(max_conc)
+        _sem = self._concurrency_sem
+
+        if _sem is not None:
+            return await asyncio.gather(*[
+                _run_one_throttled(nid, node_config) for nid, node_config in batch
+            ])
+        return await asyncio.gather(*[
+            _run_one(nid, node_config) for nid, node_config in batch
+        ])
 
     # ── Session resolution ──────────────────────────────────────────────────
 
@@ -347,6 +488,7 @@ class WorkflowExecutor:
         run_id: str,
         node_id: str,
         node_config: dict[str, Any],
+        session_mgr: SessionManager | None = None,
     ) -> tuple[str | None, bool]:
         """Determine the session ID and whether this is a resume.
 
@@ -361,11 +503,13 @@ class WorkflowExecutor:
         ``session_id`` is ``None`` for non-session-based node types
         (script, human_review).
         """
+        _session_mgr = session_mgr or self._session_mgr
+
         if node_config["type"] not in self._SESSION_TYPES:
             return None, False
 
         # Check for a stored provider-assigned session ID (opencode: ses_xxx)
-        provider_sid = await self._session_mgr.get_provider_session_id(
+        provider_sid = await _session_mgr.get_provider_session_id(
             run_id, node_id,
         )
         if provider_sid:
@@ -375,7 +519,7 @@ class WorkflowExecutor:
 
         # No provider session yet — first run (or previous attempt never
         # stored one).  Ensure a tracking record exists.
-        await self._session_mgr.get_or_create(run_id, node_id)
+        await _session_mgr.get_or_create(run_id, node_id)
         return None, False
 
     # ── Human review pause ──────────────────────────────────────────────────
@@ -387,8 +531,10 @@ class WorkflowExecutor:
         output: dict[str, Any],
         context: TemplateContext,
         ne: NodeExecution,
+        db: AsyncSession | None = None,
     ) -> bool:
         """Persist the human review pause state and return False (graceful pause)."""
+        _db = db or self._db
         ne.output = json.dumps(output, ensure_ascii=False)
         ne.status = "awaiting_review"
         ne.finished_at = utc_now_iso()
@@ -400,7 +546,7 @@ class WorkflowExecutor:
 
         # Transition run status
         stmt = select(WorkflowRun).where(WorkflowRun.id == run_id)
-        r = await self._db.execute(stmt)
+        r = await _db.execute(stmt)
         bg_run = r.scalar_one_or_none()
         if bg_run:
             bg_run.status = self._state_machine.transition(
@@ -408,9 +554,9 @@ class WorkflowExecutor:
             ).value
             bg_run.context = json.dumps(context, ensure_ascii=False)
 
-        await self._db.commit()
+        await _db.commit()
         self._log(run_id, node_id, "info",
-                  "Node awaiting human review — run paused")
+                  "Node awaiting human review — run paused", db=_db)
         return False
 
     # ── Graph traversal ─────────────────────────────────────────────────────
@@ -607,9 +753,11 @@ class WorkflowExecutor:
 
     # ── Logging ─────────────────────────────────────────────────────────────
 
-    def _log(self, run_id: str, node_id: str | None, level: str, message: str) -> None:
+    def _log(self, run_id: str, node_id: str | None, level: str, message: str,
+             db: AsyncSession | None = None) -> None:
+        _db = db or self._db
         log = RunLog(run_id=run_id, level=level, message=message, node_id=node_id)
-        self._db.add(log)
+        _db.add(log)
         if self._logger:
             # Normalise "warn" → "warning" because logging.Logger.warn is deprecated
             logger_level = "warning" if level == "warn" else level

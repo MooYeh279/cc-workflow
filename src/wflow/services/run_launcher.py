@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from wflow.common.time_utils import utc_now_iso
-from wflow.engine.executor import WorkflowExecutor
+from wflow.engine.executor import WorkflowExecutor, _resolve_max_concurrency
 from wflow.engine.node_runner import NodeRunner
 from wflow.engine.session_manager import SessionManager
 from wflow.engine.state_machine import RunStatus, RunStateMachine
@@ -149,12 +149,19 @@ async def _execute_background(
 
             node_runner = NodeRunner(handlers=handlers, logger=run_logger)
             session_mgr = SessionManager(bg_db)
+
+            max_conc = _resolve_max_concurrency()
+            run_logger.info(
+                f"Max concurrency: {'unlimited' if max_conc == 0 else max_conc}"
+            )
+
             executor = WorkflowExecutor(
                 db=bg_db,
                 node_runner=node_runner,
                 session_manager=session_mgr,
                 logger=run_logger,
                 wflow_dir=wflow_dir,
+                session_factory=session_factory,
             )
 
             success = await executor.execute(spec, run_id, context, workflow_name=workflow_name)
