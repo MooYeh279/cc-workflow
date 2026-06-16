@@ -20,6 +20,22 @@ from wflow.models.workflow import WorkflowSpec
 from wflow.services.execution_svc import ExecutionService
 from wflow.services.workflow_svc import WorkflowService
 
+# Track background tasks per run so we can cancel a stale task when a
+# newer launch (e.g. a second human review) supersedes it.
+_run_tasks: dict[str, asyncio.Task] = {}
+
+
+def _cancel_stale_task(run_id: str, logger: Any | None = None) -> None:
+    """Cancel a previously-launched background task for *run_id* if it
+    is still running.  No-op when no task exists or the task is already done.
+    """
+    old = _run_tasks.get(run_id)
+    if old is None or old.done():
+        return
+    old.cancel()
+    if logger:
+        logger.info(f"Cancelled stale background task for run {run_id}")
+
 
 async def start_and_launch(
     *,
@@ -114,7 +130,12 @@ def launch_workflow(
         run_logger.info(f"Resuming with {len(resume_nodes)} completed nodes")
     run_logger.info(f"Inputs: {json.dumps(inputs, ensure_ascii=False)}")
 
-    asyncio.create_task(
+    # Cancel any previous background task for this run (e.g. a stale
+    # executor launched by an earlier human review that hasn't finished
+    # yet).  Only one task per run may write the final result.
+    _cancel_stale_task(run_id, run_logger)
+
+    task = asyncio.create_task(
         _execute_background(
             run_id=run_id,
             workflow_name=workflow_name,
@@ -126,6 +147,8 @@ def launch_workflow(
             run_logger=run_logger,
         )
     )
+    _run_tasks[run_id] = task
+    task.add_done_callback(lambda _t, rid=run_id: _run_tasks.pop(rid, None))
 
 
 async def _execute_background(
@@ -166,6 +189,10 @@ async def _execute_background(
 
             success = await executor.execute(spec, run_id, context, workflow_name=workflow_name)
             await _persist_run_result(bg_db, run_id, context, success, run_logger)
+
+    except asyncio.CancelledError:
+        run_logger.info("Background task cancelled — superseded by newer launch")
+        raise
 
     except Exception:
         import traceback

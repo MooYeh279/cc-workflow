@@ -1063,3 +1063,59 @@ async def test_executor_concurrent_claude_nodes():
     up = d_call["upstream_output"]
     assert "b" in up
     assert "c" in up
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Human review concurrency — regression tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_human_review_pause_idempotent_when_run_already_awaiting_review():
+    """_handle_human_review_pause succeeds when run is already AWAITING_REVIEW.
+
+    The second concurrent human_review node should save its state without
+    re-transitioning the run status (which would raise ValueError).
+    """
+    import asyncio
+    from wflow.models.db import NodeExecution
+
+    db_session = AsyncMock()
+    mock_run = MagicMock()
+    mock_run.status = "awaiting_review"
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_run
+
+    async def _execute_side_effect(stmt, *args, **kwargs):
+        from sqlalchemy import Select
+        if isinstance(stmt, Select):
+            return mock_result
+        return MagicMock()
+    db_session.execute = _execute_side_effect
+    db_session.commit = AsyncMock()
+    db_session.add = MagicMock()
+
+    executor = WorkflowExecutor(
+        db=db_session,
+        node_runner=MagicMock(),
+        session_manager=MagicMock(),
+        session_factory=MagicMock(),
+    )
+
+    ne = NodeExecution(
+        id="ne-2", run_id="run-1", node_id="review_b",
+        type="human_review", status="running",
+        input="{}",
+    )
+    output = {"upstream_for_review": {"upstream": {"data": "x"}}}
+    context: TemplateContext = {"inputs": {}, "nodes": {}, "run": {"id": "run-1"}, "config": {}}
+
+    result = asyncio.run(executor._handle_human_review_pause(
+        "run-1", "review_b", output, context, ne, db=db_session,
+    ))
+
+    assert result is False
+    assert ne.status == "awaiting_review"
+    assert context["nodes"]["review_b"]["status"] == "awaiting_review"
+    assert db_session.commit.called
+    # Run status should NOT have been re-transitioned (was already AWAITING_REVIEW)
+    assert mock_run.status == "awaiting_review"

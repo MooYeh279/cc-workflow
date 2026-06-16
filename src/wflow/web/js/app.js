@@ -509,8 +509,9 @@ window.appData = function () {
           '/runs/' + this.reviewRunId + '/nodes/' + this.reviewNodeId + '/review',
           { approved: this.reviewDecision === 'approved', feedback: this.reviewFeedback }
         );
+        var rid = this.reviewRunId;
         this.closeReviewModal();
-        setTimeout(function() { self.viewRunId = self.reviewRunId; self.loadRuns(); }, 1500);
+        setTimeout(function() { self.viewRunId = rid; self.loadRuns(); }, 1500);
       } catch(e) {
         alert('Review submission error: ' + e.message);
       } finally {

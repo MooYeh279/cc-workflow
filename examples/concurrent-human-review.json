@@ -1,0 +1,93 @@
+{
+  "name": "concurrent-human-review",
+  "version": "1.0",
+  "description": "最小并发人工审核示例：两个 script 节点并行执行 → 两个 human_review 节点同时出现，各自独立审批",
+  "config": {},
+  "nodes": [
+    {
+      "id": "start",
+      "type": "script",
+      "command": "python -c \"import json; print(json.dumps({'msg':'ready'}))\"",
+      "timeout_seconds": 10,
+      "output": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "id": "task_a",
+      "type": "script",
+      "command": "python -c \"import json; print(json.dumps({'module':'A','result':'module A done'}))\"",
+      "timeout_seconds": 10,
+      "output": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "id": "task_b",
+      "type": "script",
+      "command": "python -c \"import json; print(json.dumps({'module':'B','result':'module B done'}))\"",
+      "timeout_seconds": 10,
+      "output": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "id": "review_a",
+      "type": "human_review",
+      "prompt": "审核模块 A 的输出，通过点 Approve，驳回点 Reject 并提供反馈",
+      "output": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "id": "review_b",
+      "type": "human_review",
+      "prompt": "审核模块 B 的输出，通过点 Approve，驳回点 Reject 并提供反馈",
+      "output": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "start",
+      "to": "task_a"
+    },
+    {
+      "id": "e2",
+      "from": "start",
+      "to": "task_b"
+    },
+    {
+      "id": "e3",
+      "from": "task_a",
+      "to": "review_a"
+    },
+    {
+      "id": "e4",
+      "from": "task_b",
+      "to": "review_b"
+    },
+    {
+      "id": "e5",
+      "from": "review_a",
+      "to": null
+    },
+    {
+      "id": "e6",
+      "from": "review_b",
+      "to": null
+    }
+  ]
+}

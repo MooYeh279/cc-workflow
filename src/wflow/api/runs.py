@@ -410,8 +410,12 @@ async def submit_human_review(
     }
     run.context = json.dumps(ctx, ensure_ascii=False)
 
+    # Transition run back to RUNNING if it isn't already (idempotent:
+    # another concurrent review may have already relaunched the executor).
     sm = RunStateMachine()
-    run.status = sm.transition(RunStatus(run.status), RunStatus.RUNNING).value
+    current_status = RunStatus(run.status)
+    if current_status != RunStatus.RUNNING:
+        run.status = sm.transition(current_status, RunStatus.RUNNING).value
     await db.commit()
 
     workflow = await _get_workflow_or_404(db, run.workflow_id)

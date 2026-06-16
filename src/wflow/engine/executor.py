@@ -248,6 +248,28 @@ class WorkflowExecutor:
                       "Max iterations reached — possible infinite loop")
             return False
 
+        # If nodes are still awaiting human review the workflow is not
+        # complete — it is paused.  Transition the run back to
+        # AWAITING_REVIEW so the UI reflects the real state.
+        awaiting_ids = [
+            nid for nid, s in context.get("nodes", {}).items()
+            if s.get("status") == "awaiting_review"
+        ]
+        if awaiting_ids:
+            stmt = select(WorkflowRun).where(WorkflowRun.id == run_id)
+            r = await self._db.execute(stmt)
+            bg_run = r.scalar_one_or_none()
+            if bg_run is not None:
+                current = RunStatus(bg_run.status)
+                if current != RunStatus.AWAITING_REVIEW:
+                    bg_run.status = RunStatus.AWAITING_REVIEW.value
+                bg_run.context = json.dumps(context, ensure_ascii=False)
+                await self._db.commit()
+            self._log(run_id, None, "info",
+                      f"Workflow paused — {len(awaiting_ids)} node(s) "
+                      f"awaiting review: {awaiting_ids}")
+            return False
+
         self._log(run_id, None, "info", "Workflow completed successfully")
         return True
 
@@ -544,14 +566,17 @@ class WorkflowExecutor:
             "status": "awaiting_review",
         }
 
-        # Transition run status
+        # Transition run status (idempotent: concurrent human_review
+        # nodes may already have set the run to AWAITING_REVIEW).
         stmt = select(WorkflowRun).where(WorkflowRun.id == run_id)
         r = await _db.execute(stmt)
         bg_run = r.scalar_one_or_none()
         if bg_run:
-            bg_run.status = self._state_machine.transition(
-                RunStatus(bg_run.status), RunStatus.AWAITING_REVIEW
-            ).value
+            current_status = RunStatus(bg_run.status)
+            if current_status != RunStatus.AWAITING_REVIEW:
+                bg_run.status = self._state_machine.transition(
+                    current_status, RunStatus.AWAITING_REVIEW
+                ).value
             bg_run.context = json.dumps(context, ensure_ascii=False)
 
         await _db.commit()
