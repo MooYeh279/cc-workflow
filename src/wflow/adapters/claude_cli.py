@@ -190,6 +190,11 @@ class ClaudeCLI:
             if logger:
                 logger.info(f"[{node_id}] 🏁 Result received")
             parsed_result = self._extract_result(event)
+            if parsed_result is None and logger:
+                logger.warning(
+                    f"[{node_id}] ⚠️ result event had no extractable JSON. "
+                    f"Event keys: {list(event.keys())}"
+                )
             last_heartbeat = time.monotonic()
 
         return tool_count, last_text, last_heartbeat, parsed_result

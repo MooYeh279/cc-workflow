@@ -33,6 +33,7 @@ dependencies = [
     "apscheduler>=3.10",
     "click>=8.0",
     "httpx>=0.27",
+    "json_repair",
 ]
 
 [project.optional-dependencies]

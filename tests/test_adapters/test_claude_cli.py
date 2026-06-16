@@ -259,3 +259,65 @@ async def test_run_timeout(mock_subprocess, claude):
             tools_allowed=[],
             timeout_seconds=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# _stream_and_parse — invalid JSON escape sequences (Windows paths)
+# ---------------------------------------------------------------------------
+
+BS = chr(92)  # single backslash character
+
+
+@pytest.mark.asyncio
+async def test_stream_and_parse_result_with_invalid_escapes(claude):
+    """Result event whose value contains invalid \\escape sequences is parsed."""
+    result_value = json.dumps({
+        "report_path": f"D:{BS}AI{BS}DeepResearch{BS}output.md",
+        "summary": "done",
+    })
+    mock_proc = MagicMock()
+    mock_proc.stdout = _mock_stdout_read(
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({"type": "result", "result": result_value}),
+    )
+
+    result = await claude._stream_and_parse(mock_proc, "test", logger=None)
+    assert result["summary"] == "done"
+    assert BS + "AI" in result["report_path"]
+
+
+@pytest.mark.asyncio
+async def test_stream_and_parse_fallback_windows_paths(claude):
+    """Fallback text with Windows paths in JSON code fence is parsed."""
+    raw_json = (
+        '```json\n'
+        f'{{"report_path": "D:{BS}AI{BS}DeepResearch{BS}output.md", "summary": "ok"}}\n'
+        '```'
+    )
+    mock_proc = MagicMock()
+    mock_proc.stdout = _mock_stdout_read(
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": raw_json}
+        ]}}),
+    )
+
+    result = await claude._stream_and_parse(mock_proc, "test", logger=None)
+    assert result["summary"] == "ok"
+    assert BS + "AI" in result["report_path"]
+
+
+@pytest.mark.asyncio
+async def test_stream_and_parse_result_event_without_result_field(claude):
+    """Result event with no 'result' field falls back to assistant text."""
+    mock_proc = MagicMock()
+    mock_proc.stdout = _mock_stdout_read(
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({"type": "result", "subtype": "success"}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": '```json\n{"ok": true}\n```'}
+        ]}}),
+    )
+
+    result = await claude._stream_and_parse(mock_proc, "test", logger=None)
+    assert result == {"ok": True}
