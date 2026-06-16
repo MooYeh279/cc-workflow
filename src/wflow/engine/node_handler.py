@@ -16,7 +16,7 @@ from typing import Any
 from wflow.adapters.claude_cli import ClaudeCLI
 from wflow.adapters.opencode_cli import OpenCodeCLI
 from wflow.adapters.script_runner import ScriptRunner
-from wflow.engine.template import TemplateContext
+from wflow.engine.template import TemplateContext, resolve_template
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -36,7 +36,7 @@ def build_agent_prompt(
     Subsequent nodes: injects upstream node output as JSON.
     Retry: appends error feedback so the agent can correct its output.
     """
-    parts = [f"## 角色任务\n{node['prompt']}"]
+    parts = [f"## 角色任务\n{resolve_template(node['prompt'], context)}"]
 
     if retry_reason:
         parts.append(
@@ -215,7 +215,7 @@ class ScriptHandler(NodeHandler):
         retry_reason: str | None,
         logger: Any = None,
     ) -> dict[str, Any]:
-        command = node_config["command"]
+        command = resolve_template(node_config["command"], context)
         timeout = node_config.get("timeout_seconds", 300)
 
         script_context: dict[str, Any] = {

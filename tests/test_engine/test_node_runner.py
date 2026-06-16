@@ -217,3 +217,123 @@ def test_build_agent_prompt_with_retry_reason():
     assert "No valid JSON found" in result
     assert "请修正后重新输出" in result
     assert "## 用户输入" in result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Template resolution in prompts
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_build_agent_prompt_resolves_inputs_template():
+    """Prompt can reference {{ inputs.field }} to inject user parameters."""
+    node = {"id": "coding", "prompt": "写一个 {{ inputs.task }} 的程序"}
+    context = {"inputs": {"task": "计算器"}, "nodes": {}, "run": {"id": "r1"}, "config": {}}
+
+    result = build_agent_prompt(node, context, upstream_output=None)
+
+    assert "写一个 计算器 的程序" in result
+    assert "{{ inputs.task }}" not in result
+
+
+def test_build_agent_prompt_resolves_nodes_output_template():
+    """Prompt can reference upstream node output via {{ nodes.X.output.field }}."""
+    node = {"id": "review", "prompt": "审查以下文件: {{ nodes.coding.output.files_changed }}"}
+    context = {
+        "inputs": {},
+        "nodes": {
+            "coding": {"output": {"files_changed": ["a.py", "b.py"]}, "status": "completed"}
+        },
+        "run": {"id": "r1"},
+        "config": {},
+    }
+    upstream = {"files_changed": ["a.py", "b.py"]}
+
+    result = build_agent_prompt(node, context, upstream_output=upstream)
+
+    assert "['a.py', 'b.py']" in result
+    assert "{{ nodes.coding.output.files_changed }}" not in result
+
+
+def test_build_agent_prompt_resolves_multiple_templates():
+    """Multiple template variables in one prompt are all resolved."""
+    node = {
+        "id": "report",
+        "prompt": (
+            "基于 {{ nodes.research.output.topic }} 的研究成果，"
+            "按要求 {{ inputs.format }} 格式输出报告"
+        ),
+    }
+    context = {
+        "inputs": {"format": "markdown"},
+        "nodes": {
+            "research": {"output": {"topic": "AI安全"}, "status": "completed"}
+        },
+        "run": {"id": "r1"},
+        "config": {},
+    }
+
+    result = build_agent_prompt(node, context, upstream_output=None)
+
+    assert "AI安全" in result
+    assert "markdown" in result
+    assert "{{" not in result
+
+
+def test_build_agent_prompt_resolves_config_template():
+    """Prompt can reference {{ config.key }} from workflow config."""
+    node = {"id": "check", "prompt": "重试次数上限: {{ config.max_retries }}"}
+    context = {"inputs": {}, "nodes": {}, "run": {"id": "r1"}, "config": {"max_retries": 5}}
+
+    result = build_agent_prompt(node, context, upstream_output=None)
+
+    assert "重试次数上限: 5" in result
+    assert "{{ config.max_retries }}" not in result
+
+
+def test_build_agent_prompt_missing_template_variable_becomes_empty():
+    """Unresolvable template paths become empty strings, not errors."""
+    node = {"id": "test", "prompt": "前: {{ nodes.missing.output.x }}:后"}
+    context = {"inputs": {}, "nodes": {}, "run": {"id": "r1"}, "config": {}}
+
+    result = build_agent_prompt(node, context, upstream_output=None)
+
+    assert "前: :后" in result
+
+
+def test_build_agent_prompt_no_template_unchanged():
+    """Prompt with no template variables passes through unchanged."""
+    node = {"id": "start", "prompt": "普通任务描述，无变量"}
+    context = {"inputs": {"task": "hello"}, "nodes": {}, "run": {"id": "r1"}, "config": {}}
+
+    result = build_agent_prompt(node, context, upstream_output=None)
+
+    assert "普通任务描述，无变量" in result
+
+
+def test_script_handler_command_resolves_template():
+    """Script command supports {{ }} template variables."""
+    from wflow.engine.node_handler import ScriptHandler
+
+    mock_runner = MagicMock()
+    mock_runner.run = AsyncMock(return_value={"status": "ok"})
+    handler = ScriptHandler(mock_runner)
+
+    node_config = {"id": "s1", "command": "python run.py {{ nodes.coding.output.result }}"}
+    context = {
+        "inputs": {},
+        "nodes": {"coding": {"output": {"result": "data.csv"}, "status": "completed"}},
+        "run": {"id": "r1"},
+        "config": {},
+    }
+
+    import asyncio
+    asyncio.run(handler.run(
+        node_config, context,
+        session_id=None, is_resume=False,
+        upstream_output=None, cwd="/tmp",
+        retry_reason=None,
+    ))
+
+    called_command = mock_runner.run.call_args[1]["command"]
+    assert called_command == "python run.py data.csv"
+    assert "{{" not in called_command

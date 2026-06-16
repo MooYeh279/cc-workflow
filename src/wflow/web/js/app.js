@@ -178,14 +178,34 @@ window.appData = function () {
     };
     return 'fi-'+ (map[ext] || 'default');
   }
+  function getLanguage(filename) {
+    var ext = (filename.split('.').pop()||'').toLowerCase();
+    var base = filename.split('/').pop().toLowerCase();
+    var map = {
+      py:'python', js:'javascript', ts:'typescript', jsx:'javascript', tsx:'typescript',
+      json:'json', yaml:'yaml', yml:'yaml', toml:'ini', ini:'ini', cfg:'ini',
+      html:'xml', css:'css', scss:'scss', less:'less',
+      md:'markdown', txt:'plaintext', log:'plaintext', csv:'plaintext',
+      sh:'bash', bash:'bash', zsh:'bash', bat:'dos', ps1:'powershell',
+      sql:'sql', rs:'rust', go:'go', java:'java', c:'c', cpp:'cpp', h:'c', hpp:'cpp',
+      rb:'ruby', php:'php', swift:'swift', kt:'kotlin', scala:'scala',
+      xml:'xml', dockerfile:'dockerfile', makefile:'makefile',
+    };
+    if (map[base]) return map[base];
+    return map[ext] || '';
+  }
+  function isBinaryExt(filename) {
+    var ext = (filename.split('.').pop()||'').toLowerCase();
+    return ['png','jpg','jpeg','gif','svg','ico','zip','tar','gz','exe','dll','so','woff','ttf','pdf'].indexOf(ext) >= 0;
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   return {
-    page: 'dashboard',
+    page: (function(){ var h=location.hash.slice(1); var valid=['dashboard','workflows','runs','cron']; if (valid.indexOf(h)>=0) return h; if (h.indexOf('runs/')===0) return 'runs'; return 'dashboard'; })(),
     workflows: [], workflowDetails: {},
     runs: [], cronJobs: [],
     dashboardHTML: '', runsHTML: '',
-    showCreateWorkflow: false, showCreateCron: false, viewRunId: null,
+    showCreateWorkflow: false, showCreateCron: false, viewRunId: (function(){ var h=location.hash.slice(1); var m=h.match(/^runs\/(.+)$/); return m ? m[1] : null; })(),
     runFormWfId: null, runFormWfName: '', runFormInputs: {}, runFormValues: {},
     // File browser
     fileTreeHTML: '', fileContentHTML: '', fileLoading: false,
@@ -199,15 +219,30 @@ window.appData = function () {
     reviewFeedback: '', reviewDecision: null, reviewSubmitting: false,
 
     async init() {
-      console.log('[WFlow] init called, page:', this.page);
-      await this.loadDashboard();
-      console.log('[WFlow] dashboardHTML set, length:', (this.dashboardHTML||'').length);
+      console.log('[WFlow] init called, page:', this.page, 'viewRunId:', this.viewRunId);
+      // Restore page from hash, load corresponding data
+      if (this.page === 'dashboard') await this.loadDashboard();
+      else if (this.page === 'workflows') await this.loadWorkflows();
+      else if (this.page === 'runs') await this.loadRuns();
+      else if (this.page === 'cron') { await this.loadWorkflows(); await this.loadCron(); }
       var s = this;
       this.$watch('page', async function(v) {
+        // Sync hash (strip run detail so page-only hash doesn't lose viewRunId)
+        if (v === 'runs' && s.viewRunId) {
+          location.hash = 'runs/' + s.viewRunId;
+        } else {
+          location.hash = v;
+        }
         if (v==='workflows') await s.loadWorkflows();
         if (v==='runs') await s.loadRuns();
         if (v==='cron') { await s.loadWorkflows(); await s.loadCron(); }
         if (v==='dashboard') await s.loadDashboard();
+      });
+      // Also sync hash on viewRunId changes while on runs page
+      this.$watch('viewRunId', function(v) {
+        if (s.page === 'runs') {
+          location.hash = v ? 'runs/' + v : 'runs';
+        }
       });
     },
 
@@ -344,14 +379,35 @@ window.appData = function () {
     async viewFile(runId, path) {
       try {
         var data = await apiGet('/runs/'+runId+'/files/content',{path:path});
-        var lines = data.content.split('\n');
-        var numbered = '';
-        for (var i=0;i<lines.length;i++) {
-          numbered += '<div class="code-line"><span class="line-num">'+(i+1)+'</span><span class="line-text">'+esc(lines[i]||' ')+'</span></div>';
+        var code = data.content;
+        var lines = code.split('\n');
+        var fname = path.split('/').pop();
+
+        // Syntax highlight or plain text
+        var highlightedHTML;
+        if (typeof hljs !== 'undefined' && !isBinaryExt(fname) && code.length < 500000) {
+          try {
+            var lang = getLanguage(fname);
+            var result = lang ? hljs.highlight(code, {language: lang, ignoreIllegals: true}) : hljs.highlightAuto(code);
+            highlightedHTML = result.value;
+          } catch(e) {
+            highlightedHTML = esc(code);
+          }
+        } else {
+          highlightedHTML = esc(code);
         }
+
+        // Split highlighted HTML by lines and add line numbers
+        var hlLines = highlightedHTML.split('\n');
+        var numbered = '';
+        for (var i = 0; i < hlLines.length; i++) {
+          numbered += '<div class="code-line"><span class="line-num">'+(i+1)+'</span><span class="line-text">'+(hlLines[i]||'&nbsp;')+'</span></div>';
+        }
+
         this.fileContentHTML =
           '<div class="editor-tab">'+
-            '<span class="editor-tab-name">'+esc(path.split('/').pop())+'</span>'+
+            '<span class="editor-tab-name">'+esc(fname)+'</span>'+
+            '<span class="editor-tab-lang">'+(getLanguage(fname)||'plain')+'</span>'+
             '<span class="editor-tab-info">'+formatSize(data.size)+' | '+(lines.length)+' lines</span>'+
             '<button class="editor-tab-close" onclick="getWFlowApp().fileContentHTML=\'\'">✕</button>'+
           '</div>'+
@@ -476,7 +532,7 @@ window.appData = function () {
               '<button class="btn primary" @click="viewRunId=null;loadRuns()">\u{2190} Back to Runs</button>'+
               '<code>'+run.id+'</code>'+
               '<span class="badge '+run.status+'">'+run.status+'</span>'+
-              (run.status==='running'||run.status==='awaiting_review' ? '<button class="btn sm" onclick="location.reload()">Refresh</button>' : '')+
+              (run.status==='running'||run.status==='awaiting_review' ? '<button class="btn sm" @click="loadRuns()">Refresh</button>' : '')+
               '</div>';
 
             if (run.work_dir) {
